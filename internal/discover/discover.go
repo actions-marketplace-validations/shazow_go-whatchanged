@@ -34,12 +34,15 @@ type Package struct {
 // skipped, as are directories without buildable Go files. Main packages are
 // skipped too unless main is set, in which case they are returned with Main
 // marked, and directories named internal unless internal is set, in which
-// case their packages are returned with Internal marked.
+// case their packages are returned with Internal marked. A directory whose
+// Go files are all test files has no API and is skipped unless tests is
+// set, in which case it is returned for its tests' sake, with no
+// Build.GoFiles.
 //
 // Directories that cannot be imported for reasons other than having no Go
 // files (for instance, several package clauses in one directory) are
 // reported in problems and otherwise skipped.
-func Packages(ctxt *build.Context, fsys FS, root, modPath string, internal, main bool) (pkgs map[string]Package, problems map[string]string, err error) {
+func Packages(ctxt *build.Context, fsys FS, root, modPath string, internal, main, tests bool) (pkgs map[string]Package, problems map[string]string, err error) {
 	pkgs = map[string]Package{}
 	problems = map[string]string{}
 	var walk func(dir, rel string, isInternal bool) error
@@ -51,7 +54,7 @@ func Packages(ctxt *build.Context, fsys FS, root, modPath string, internal, main
 		bp, ierr := ctxt.ImportDir(dir, 0)
 		switch ierr.(type) {
 		case nil:
-			if (bp.Name != "main" || main) && len(bp.GoFiles) > 0 {
+			if (bp.Name != "main" || main) && (len(bp.GoFiles) > 0 || tests && len(bp.TestGoFiles)+len(bp.XTestGoFiles) > 0) {
 				pkgs[importPath] = Package{Dir: dir, Build: bp, Internal: isInternal, Main: bp.Name == "main"}
 			}
 		case *build.NoGoError:

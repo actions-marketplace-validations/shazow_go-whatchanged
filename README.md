@@ -271,10 +271,11 @@ exit code always describe the public API changes of the full diff.
 A test function is a `Test`, `Benchmark`, `Fuzz` or `Example` function of
 the package's test files for the build target, its own and its external
 `_test` package's alike, named as the `go` command names them (`TestOpen`
-and `Test_open` are tests, `Testify` is not). Tests are read from their
-declarations alone, so subtests are not seen. The go.mod directives are
-`go`, `toolchain`, the direct `require`s and the `replace`s; indirect
-requirements are not tracked. Import, go.mod and test changes are never
+and `Test_open` are tests, `Testify` is not, and `TestMain` is the test
+binary's entry point). Tests are read from their declarations alone, so
+subtests are not seen; a directory of test files alone is a package for
+their sake. The go.mod directives are `go`, `toolchain`, the direct
+`require`s and the `replace`s; indirect requirements are not tracked. Import, go.mod and test changes are never
 API changes: they do not count, and `breaking` hides them.
 
 ```
@@ -364,8 +365,9 @@ declaration inside it. A package with import changes carries them in
 `name`, a `kind` and, with `--pos`, a `pos`; a package with import or test
 changes alone has an empty `changes`. The go.mod changes are a top-level
 `mod` array, each a `directive` (`go`, `toolchain`, `require` or
-`replace`), its `path` for the latter two, a `kind` of `added`, `removed`
-or `changed`, the `before` and `after` values, and with `--pos` a `pos`.
+`replace`), its `path` for the latter two and the `version` a replacement
+of one version names, a `kind` of `added`, `removed` or `changed`, the
+`before` and `after` values, and with `--pos` a `pos`.
 
 ```json
 {

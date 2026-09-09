@@ -38,7 +38,7 @@ func (Sizer) Size() int // incompatible
 
 The same report goes to the job summary under a heading whose glyph
 names the release the changes call for, 🟢 none, 🟡 minor, 🔴 major. A
-pull request that never touches the API gets no comment at all.
+pull request with nothing to report gets no comment at all.
 
 ## Adding it
 

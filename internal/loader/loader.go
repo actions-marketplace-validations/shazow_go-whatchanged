@@ -425,10 +425,10 @@ func (l *Loader) parse(dir string, names []string) ([]*ast.File, []string, error
 
 // Test is a test function: a top-level Test, Benchmark, Fuzz or Example
 // function of a package's test files, located by the position of its
-// declaration.
+// name.
 type Test struct {
 	Name string
-	Pos  token.Pos
+	Pos  token.Position
 }
 
 // Tests parses the test files of the main-module package at dir, those of
@@ -453,21 +453,30 @@ func (l *Loader) Tests(importPath, dir string, bp *build.Package) ([]Test, error
 	for _, f := range files {
 		for _, d := range f.Decls {
 			fn, ok := d.(*ast.FuncDecl)
-			if !ok || fn.Recv != nil || !isTest(fn.Name.Name) || seen[fn.Name.Name] {
+			if !ok || !isTest(fn) || seen[fn.Name.Name] {
 				continue
 			}
 			seen[fn.Name.Name] = true
-			tests = append(tests, Test{Name: fn.Name.Name, Pos: fn.Name.Pos()})
+			tests = append(tests, Test{Name: fn.Name.Name, Pos: l.fset.Position(fn.Name.Pos())})
 		}
 	}
 	return tests, nil
 }
 
-// isTest reports whether name is that of a test function, as the go
-// command decides it: one of the prefixes followed by nothing or by a
-// character that is not a lower-case letter, so that TestOpen and Test_x
-// are tests and Testify is not.
-func isTest(name string) bool {
+// isTest reports whether fn is a test function, as the go command decides
+// it: a function without a receiver whose name is one of the prefixes
+// followed by nothing or by a character that is not a lower-case letter,
+// so that TestOpen and Test_x are tests and Testify is not. TestMain is
+// the entry point of the test binary rather than a test, unless it takes
+// a *testing.T.
+func isTest(fn *ast.FuncDecl) bool {
+	if fn.Recv != nil {
+		return false
+	}
+	name := fn.Name.Name
+	if name == "TestMain" {
+		return paramType(fn) == "*testing.T"
+	}
 	for _, prefix := range []string{"Test", "Benchmark", "Fuzz", "Example"} {
 		if rest, ok := strings.CutPrefix(name, prefix); ok {
 			if rest == "" {
@@ -478,6 +487,16 @@ func isTest(name string) bool {
 		}
 	}
 	return false
+}
+
+// paramType is the type of fn's one parameter as written, "*testing.T",
+// or "" when fn has none or several.
+func paramType(fn *ast.FuncDecl) string {
+	params := fn.Type.Params.List
+	if len(params) != 1 || len(params[0].Names) > 1 {
+		return ""
+	}
+	return types.ExprString(params[0].Type)
 }
 
 func readFile(ctxt build.Context, name string) ([]byte, error) {

@@ -43,11 +43,12 @@ changes call for: "would require: MINOR (v1.4.0 → v1.5.0)".
 matching anything: "store/..." is the store package and everything below
 it. Both may be repeated or given comma-separated lists.
 
---filter=default, the default, lists the public API first, then the
-internal packages and then the main packages (commands), which nothing
-can import; neither of the latter counts towards the summary, the
-required release or the exit code. --filter=public, --filter=internal and
---filter=main pick the parts to show, and add up: --filter=public,main.
+--filter=default, the default, lists the changes to go.mod, then the
+public API, then the internal packages and then the main packages
+(commands), which nothing can import; neither of the latter counts
+towards the summary, the required release or the exit code.
+--filter=public, --filter=internal and --filter=main pick the parts to
+show, and add up: --filter=public,main.
 
 Above each package's changes, the diff lists the packages of other modules
 it started or stopped importing, so that a new dependency is as visible as
@@ -69,7 +70,7 @@ when named, alone or with the other kinds, --filter=api,tests, and by
 --filter=all, which is everything: every part and every kind of change.
 
 --filter=breaking narrows the diff to incompatible changes, which no
-import or test change is, and combines with any of the above:
+import, go.mod or test change is, and combines with any of the above:
 --filter=public,breaking.
 
 GOOS and GOARCH in the environment select the build target, as for the go
@@ -214,11 +215,11 @@ func (o *options) whatchanged() (whatchanged.Options, error) {
 
 // filter collects the terms of a repeatable, comma-separated --filter flag:
 // "public", "internal" and "main" say which packages take part, "api",
-// "imports", "mod" and "tests" which kinds of change, and "breaking" narrows the
-// diff to incompatible changes. "default" stands for every package and
-// the default kinds, which is also what a dimension with no term of its
-// own gets, and "all" for every package and every kind. It is a slice so
-// that go-flags drops the default when the flag is given.
+// "imports", "mod" and "tests" which kinds of change, and "breaking"
+// narrows the diff to incompatible changes. "default" stands for every
+// package and the default kinds, which is also what a dimension with no
+// term of its own gets, and "all" for every package and every kind. It is
+// a slice so that go-flags drops the default when the flag is given.
 type filter []string
 
 // UnmarshalFlag adds the terms of one flag occurrence, implementing

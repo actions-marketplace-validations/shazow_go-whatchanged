@@ -625,7 +625,7 @@ func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, 
 	// Main packages can live below internal directories, so those are
 	// walked whenever either takes part; Includes sorts out the rest.
 	internal := opts.Filter.Has(render.Internal) || opts.Filter.Has(render.Main)
-	found, problems, err := discover.Packages(&ctxt, s.overlay, s.root, res.ModPath(), internal, opts.Filter.Has(render.Main))
+	found, problems, err := discover.Packages(&ctxt, s.overlay, s.root, res.ModPath(), internal, opts.Filter.Has(render.Main), opts.Kinds.Has(render.Tests))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", s.name, err)
 	}
@@ -656,20 +656,27 @@ func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, 
 	slices.Sort(s.all)
 	slices.Sort(paths)
 	for _, p := range paths {
-		pkg, err := s.ld.Load(p, found[p].Dir, found[p].Build)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", s.name, err)
+		bp := found[p].Build
+		// A directory of test files alone, discovered for the tests,
+		// has no package to check.
+		if len(bp.GoFiles) > 0 {
+			pkg, err := s.ld.Load(p, found[p].Dir, bp)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", s.name, err)
+			}
+			s.pkgs[p] = pkg
 		}
-		s.pkgs[p] = pkg
 		s.internal[p] = found[p].Internal
 		s.main[p] = found[p].Main
 		if s.imports != nil {
-			s.imports[p] = s.dependencies(found[p].Dir, found[p].Build.Imports)
+			s.imports[p] = s.dependencies(found[p].Dir, bp.Imports)
 		}
 		if s.tests != nil {
-			if s.tests[p], err = s.testFuncs(p, found[p].Dir, found[p].Build, fset); err != nil {
+			tests, err := s.testFuncs(p, found[p].Dir, bp)
+			if err != nil {
 				return nil, fmt.Errorf("%s: %w", s.name, err)
 			}
+			s.tests[p] = tests
 		}
 	}
 	if err := s.ld.Err(); err != nil {
@@ -711,11 +718,13 @@ func resolveTree(repo *git.Repository, rev string) (*object.Tree, error) {
 
 func diffSides(base, head *side, fset *token.FileSet) *render.Result {
 	union := map[string]bool{}
-	for p := range base.pkgs {
-		union[p] = true
-	}
-	for p := range head.pkgs {
-		union[p] = true
+	for _, s := range []*side{base, head} {
+		for p := range s.pkgs {
+			union[p] = true
+		}
+		for p := range s.tests {
+			union[p] = true
+		}
 	}
 
 	res := &render.Result{}
@@ -723,34 +732,48 @@ func diffSides(base, head *side, fset *token.FileSet) *render.Result {
 		old, inBase := base.pkgs[p]
 		nw, inHead := head.pkgs[p]
 		pkg := render.Package{Path: p, Internal: base.internal[p] || head.internal[p], Main: base.main[p] || head.main[p]}
+		// A directory of test files alone has no package to import, so
+		// its status follows the package where one side has it, and its
+		// tests otherwise.
+		onBase, onHead := inBase, inHead
+		if !inBase && !inHead {
+			onBase, onHead = base.has(p), head.has(p)
+		}
 		switch {
-		case inBase && inHead:
+		case onBase && onHead:
 			pkg.Status = render.Both
-		case inHead:
+		case onHead:
 			pkg.Status = render.New
-			old = types.NewPackage(p, nw.Name())
 		default:
 			pkg.Status = render.Removed
-			nw = types.NewPackage(p, old.Name())
 		}
-		for _, c := range apidiff.Changes(old, nw).Changes {
-			rc := render.Change{Message: c.Message, Compatible: c.Compatible}
-			annotate(&rc, fset, base, head, old, nw)
-			pkg.Changes = append(pkg.Changes, rc)
+		if inBase || inHead {
+			if !inBase {
+				old = types.NewPackage(p, nw.Name())
+			}
+			if !inHead {
+				nw = types.NewPackage(p, old.Name())
+			}
+			for _, c := range apidiff.Changes(old, nw).Changes {
+				rc := render.Change{Message: c.Message, Compatible: c.Compatible}
+				annotate(&rc, fset, base, head, old, nw)
+				pkg.Changes = append(pkg.Changes, rc)
+			}
+			// apidiff only sees symbols, so a package with no exported
+			// API that appears or disappears would go unreported.
+			// Importers still notice: the import breaks, or its init side
+			// effects are gone.
+			if len(pkg.Changes) == 0 {
+				switch pkg.Status {
+				case render.New:
+					pkg.Changes = append(pkg.Changes, render.Change{Message: "package added", Compatible: true})
+				case render.Removed:
+					pkg.Changes = append(pkg.Changes, render.Change{Message: "package removed"})
+				}
+			}
 		}
 		pkg.Imports = diffImports(base.imports[p], head.imports[p])
 		pkg.Tests = diffTests(base.tests[p], head.tests[p])
-		// apidiff only sees symbols, so a package with no exported API
-		// that appears or disappears would go unreported. Importers still
-		// notice: the import breaks, or its init side effects are gone.
-		if len(pkg.Changes) == 0 {
-			switch pkg.Status {
-			case render.New:
-				pkg.Changes = append(pkg.Changes, render.Change{Message: "package added", Compatible: true})
-			case render.Removed:
-				pkg.Changes = append(pkg.Changes, render.Change{Message: "package removed"})
-			}
-		}
 		res.Packages = append(res.Packages, pkg)
 	}
 
@@ -759,20 +782,29 @@ func diffSides(base, head *side, fset *token.FileSet) *render.Result {
 	return res
 }
 
+// has reports whether the side has the package at all: type-checked, or
+// listed for its tests alone.
+func (s *side) has(p string) bool {
+	_, pkg := s.pkgs[p]
+	_, tests := s.tests[p]
+	return pkg || tests
+}
+
 // directive is one directive of a side's go.mod: the go or toolchain
 // directive, a direct requirement or a replacement. path names the module
-// for the latter two, with its version for a replacement that names one;
-// value is the version, the toolchain or the replacement target.
+// for the latter two and version the one version of it a replacement
+// names, when it does; value is the version, the toolchain or the
+// replacement target.
 type directive struct {
-	name, path, value string
-	pos               render.Position
+	name, path, version, value string
+	pos                        render.Position
 }
 
 // key identifies the directive across the two sides, and sorts the
 // directives in the file's order: go, toolchain, require, replace, each
-// by path.
+// by path and version.
 func (d directive) key() string {
-	return strconv.Itoa(slices.Index([]string{"go", "toolchain", "require", "replace"}, d.name)) + " " + d.path
+	return strconv.Itoa(slices.Index([]string{"go", "toolchain", "require", "replace"}, d.name)) + " " + d.path + " " + d.version
 }
 
 // directives lists the directives of the side's go.mod in key order.
@@ -797,7 +829,7 @@ func (s *side) directives() []directive {
 		}
 	}
 	for _, r := range mf.Replace {
-		out = append(out, directive{name: "replace", path: strings.TrimSpace(r.Old.Path + " " + r.Old.Version),
+		out = append(out, directive{name: "replace", path: r.Old.Path, version: r.Old.Version,
 			value: strings.TrimSpace(r.New.Path + " " + r.New.Version), pos: at(r.Syntax)})
 	}
 	slices.SortFunc(out, func(a, b directive) int { return strings.Compare(a.key(), b.key()) })
@@ -813,7 +845,7 @@ func diffMod(base, head *side) []render.Directive {
 	key := directive.key
 	var out []render.Directive
 	for _, d := range missing(base.mod, head.mod, key) {
-		out = append(out, render.Directive{Name: d.name, Path: d.path, Before: d.value, Pos: d.pos})
+		out = append(out, d.render(d.value, ""))
 	}
 	old := map[string]directive{}
 	for _, d := range base.mod {
@@ -821,13 +853,19 @@ func diffMod(base, head *side) []render.Directive {
 	}
 	for _, d := range head.mod {
 		if o, ok := old[d.key()]; ok && o.value != d.value {
-			out = append(out, render.Directive{Name: d.name, Path: d.path, Before: o.value, After: d.value, Pos: d.pos})
+			out = append(out, d.render(o.value, d.value))
 		}
 	}
 	for _, d := range missing(head.mod, base.mod, key) {
-		out = append(out, render.Directive{Name: d.name, Path: d.path, After: d.value, Pos: d.pos})
+		out = append(out, d.render("", d.value))
 	}
 	return out
+}
+
+// render returns the directive as a change from before to after, either
+// empty for a directive on one side alone, located where d was read.
+func (d directive) render(before, after string) render.Directive {
+	return render.Directive{Name: d.name, Path: d.path, Version: d.version, Before: before, After: after, Pos: d.pos}
 }
 
 // dependencies returns the imports of a package in dir that other modules
@@ -851,14 +889,14 @@ func (s *side) dependencies(dir string, imports []string) []string {
 
 // testFuncs lists the test functions of the package in dir, located as
 // the renderer shows positions.
-func (s *side) testFuncs(importPath, dir string, bp *build.Package, fset *token.FileSet) ([]render.Test, error) {
+func (s *side) testFuncs(importPath, dir string, bp *build.Package) ([]render.Test, error) {
 	found, err := s.ld.Tests(importPath, dir, bp)
 	if err != nil {
 		return nil, err
 	}
 	tests := make([]render.Test, len(found))
 	for i, t := range found {
-		tests[i] = render.Test{Name: t.Name, Pos: s.position(fset.Position(t.Pos))}
+		tests[i] = render.Test{Name: t.Name, Pos: s.position(t.Pos)}
 	}
 	return tests, nil
 }

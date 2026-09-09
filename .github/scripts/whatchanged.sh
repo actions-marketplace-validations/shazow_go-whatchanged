@@ -239,7 +239,7 @@ upsert_comment() {
     annotate warning "could not list the pull request's comments (HTTP $(cat "$work/http")). The comment needs pull-requests: write under the workflow's permissions; set comment: false for the job summary alone."
     return
   fi
-  if [ -z "$id" ] && [ "$(jq '.packages | length' "$json")" -eq 0 ]; then
+  if [ -z "$id" ] && [ "$(jq '(.packages | length) + ((.mod // []) | length)' "$json")" -eq 0 ]; then
     log "nothing to show; no comment"
     return
   fi

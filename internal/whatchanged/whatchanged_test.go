@@ -945,7 +945,8 @@ func TestModuleSides(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	mustContain(t, r.stdout, "+ func B()", "example.org/lib@v1.1.0:lib.go:5")
+	mustContain(t, r.stdout, "+ func B()", "example.org/lib@v1.1.0:lib.go:5",
+		"go.mod\n  + replace example.org/other => ../other  example.org/lib@v1.1.0:go.mod:5:1\n")
 	mustNotContain(t, r.stdout, "func C()")
 
 	// A pseudo-version base is no release, so nothing is suggested.
@@ -1509,6 +1510,7 @@ func TestGolden(t *testing.T) {
 		// summary counts the full diff either way.
 		{"imports", Options{Kinds: render.Imports}, ExitIncompatible},
 		{"api", Options{Kinds: render.API}, ExitIncompatible},
+		{"mod", Options{Kinds: render.Mod}, ExitIncompatible},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -2408,7 +2410,7 @@ func TestFilterInternalPackages(t *testing.T) {
 	if want := "warn: example.com/m: --pkg \"a\" matched no packages\n"; r.stderr != want {
 		t.Errorf("internal --pkg a: stderr = %q, want %q", r.stderr, want)
 	}
-	if want := "internal: no changes\n"; r.stdout != want {
+	if want := "internal: no API changes\n"; r.stdout != want {
 		t.Errorf("internal --pkg a: stdout = %q, want %q", r.stdout, want)
 	}
 
@@ -2420,7 +2422,7 @@ func TestFilterInternalPackages(t *testing.T) {
 		t.Errorf("clean: stdout = %q\nwant     %q", r.stdout, want)
 	}
 	r = f.mustRun("HEAD", "", Options{Filter: render.Internal})
-	if want := "internal: no changes\n"; r.stdout != want {
+	if want := "internal: no API changes\n"; r.stdout != want {
 		t.Errorf("clean internal: stdout = %q\nwant     %q", r.stdout, want)
 	}
 
@@ -2561,7 +2563,7 @@ func TestFilterMainPackages(t *testing.T) {
 		t.Errorf("unchanged main: stdout = %q\nwant     %q", r.stdout, want)
 	}
 	r = f.mustRun("HEAD", "", Options{Filter: render.Main})
-	if want := "main: no changes\n"; r.stdout != want {
+	if want := "main: no API changes\n"; r.stdout != want {
 		t.Errorf("unchanged --filter=main: stdout = %q\nwant     %q", r.stdout, want)
 	}
 	f.write("cmd/m/main.go", "package main\n\nfunc main() {}\n")
@@ -2738,14 +2740,16 @@ func TestImports(t *testing.T) {
 // TestTests covers test changes: the Test, Benchmark, Fuzz and Example
 // functions of a package's test files that appeared or disappeared are
 // listed after its API changes when --filter=tests asks for them, in every
-// layout, and never count. Helpers and functions whose name only starts
-// like a test's are not tests, a test file the build target excludes is
-// not read, a name declared by both the package's own and its external
-// test files is one test, and a test that moves between them is no
-// change. A new package brings all of its tests, a removed one loses them,
-// and a package whose tests alone changed is listed without counting as
-// changed. Tests are not among the default kinds, --filter=tests shows
-// nothing else, and breaking hides them as compatible changes.
+// layout, and never count. Helpers, functions whose name only starts like
+// a test's and TestMain are not tests, a test file the build target
+// excludes is not read, a name declared by both the package's own and its
+// external test files is one test, and a test that moves between them is
+// no change. A new package brings all of its tests, a removed one loses
+// them, a directory of test files alone is a package for their sake, and
+// a package whose tests alone changed is listed without counting as
+// changed, in the internal section too. Tests are not among the default
+// kinds, --filter=tests shows nothing else, and breaking hides them as
+// compatible changes.
 func TestTests(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
@@ -2757,13 +2761,19 @@ func TestTests(t *testing.T) {
 	f.write("util/util_test.go", "package util\n\nimport \"testing\"\n\nfunc TestUp(t *testing.T) {}\n")
 	f.write("gone/gone.go", "package gone\n\nfunc Gone() {}\n")
 	f.write("gone/gone_test.go", "package gone\n\nimport \"testing\"\n\nfunc TestGone(t *testing.T) {}\n")
+	f.write("e2e/e2e_test.go", "package e2e\n\nimport \"testing\"\n\nfunc TestE2E(t *testing.T) {}\n")
+	f.write("internal/hid/hid.go", "package hid\n\nfunc Hid() {}\n")
+	f.write("internal/hid/hid_test.go", "package hid\n\nimport \"testing\"\n\nfunc TestHid(t *testing.T) {}\n")
 	f.commit("base")
 
-	// store: loses TestClose, gains FuzzOpen, keeps TestOpen in the
-	// external test file alone, and gains a test behind a build tag; its
-	// API is unchanged. util: renames Up and its test. gone is removed
-	// and fresh added, each with a test.
-	f.write("store/store_test.go", "package store\n\nimport \"testing\"\n\nfunc BenchmarkOpen(b *testing.B) {}\n\nfunc FuzzOpen(f *testing.F) {}\n")
+	// store: loses TestClose, gains FuzzOpen and a TestMain, keeps
+	// TestOpen in the external test file alone, and gains a test behind
+	// a build tag; its API is unchanged. util: renames Up and its test.
+	// gone is removed and fresh added, each with a test. e2e, test files
+	// alone, and the internal hid rename their tests.
+	f.write("store/store_test.go", "package store\n\nimport \"testing\"\n\nfunc TestMain(m *testing.M) {}\n\nfunc BenchmarkOpen(b *testing.B) {}\n\nfunc FuzzOpen(f *testing.F) {}\n")
+	f.write("e2e/e2e_test.go", "package e2e\n\nimport \"testing\"\n\nfunc TestEnd(t *testing.T) {}\n")
+	f.write("internal/hid/hid_test.go", "package hid\n\nimport \"testing\"\n\nfunc TestHid2(t *testing.T) {}\n")
 	f.write("store/integration_test.go", "//go:build integration\n\npackage store\n\nimport \"testing\"\n\nfunc TestIntegration(t *testing.T) {}\n")
 	f.write("util/util.go", "package util\n\nfunc Upper(s string) string { return s }\n")
 	f.write("util/util_test.go", "package util\n\nimport \"testing\"\n\nfunc TestUpper(t *testing.T) {}\n")
@@ -2779,7 +2789,10 @@ func TestTests(t *testing.T) {
 
 	// The tests alone: the summary still counts the API changes.
 	r = f.mustRun("HEAD", "", Options{Kinds: render.Tests})
-	want := "example.com/m/fresh (new)\n" +
+	want := "example.com/m/e2e\n" +
+		"  - func TestE2E\n" +
+		"  + func TestEnd\n\n" +
+		"example.com/m/fresh (new)\n" +
 		"  + func TestHello\n\n" +
 		"example.com/m/gone (removed)\n" +
 		"  - func TestGone\n\n" +
@@ -2789,7 +2802,11 @@ func TestTests(t *testing.T) {
 		"example.com/m/util\n" +
 		"  - func TestUp\n" +
 		"  + func TestUpper\n\n" +
-		"3 packages changed · 2 incompatible · 2 compatible · would require: MAJOR\n"
+		"3 packages changed · 2 incompatible · 2 compatible · would require: MAJOR\n\n" +
+		"example.com/m/internal/hid (internal)\n" +
+		"  - func TestHid\n" +
+		"  + func TestHid2\n\n" +
+		"internal: no API changes\n"
 	if r.stdout != want {
 		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
 	}
@@ -2804,7 +2821,7 @@ func TestTests(t *testing.T) {
 	// tests alone changed is listed.
 	r = f.mustRun("HEAD", "", Options{Kinds: render.API | render.Tests, Positions: true})
 	mustContain(t, r.stdout,
-		"example.com/m/store\n  - func TestClose  HEAD:store/store_test.go:7:6\n  + func FuzzOpen   store/store_test.go:7:6\n\n",
+		"example.com/m/store\n  - func TestClose  HEAD:store/store_test.go:7:6\n  + func FuzzOpen   store/store_test.go:9:6\n\n",
 		"example.com/m/util\n  - func Up(s string) string     HEAD:util/util.go:3:6\n  + func Upper(s string) string  util/util.go:3:6\n  - func TestUp                  HEAD:util/util_test.go:5:6\n  + func TestUpper               util/util_test.go:5:6\n\n")
 
 	// Breaking hides the tests, as compatible changes.
@@ -2814,7 +2831,8 @@ func TestTests(t *testing.T) {
 	r = f.mustRun("HEAD", "", Options{Kinds: render.API | render.Tests, Format: render.Markdown})
 	mustContain(t, r.stdout,
 		"### `example.com/m/store`\n\n```go\n// Removed\nfunc TestClose\n\n// Added\nfunc FuzzOpen\n```\n",
-		"### `example.com/m/util`\n\n```go\n// Removed\nfunc Up(s string) string\nfunc TestUp\n\n// Added\nfunc Upper(s string) string\nfunc TestUpper\n```\n")
+		"### `example.com/m/util`\n\n```go\n// Removed\nfunc Up(s string) string\nfunc TestUp\n\n// Added\nfunc Upper(s string) string\nfunc TestUpper\n```\n",
+		"### `example.com/m/internal/hid` (internal)\n\n```go\n// Removed\nfunc TestHid\n\n// Added\nfunc TestHid2\n```\n\n_internal: no API changes_\n")
 
 	r = f.mustRun("HEAD", "", Options{Kinds: render.Tests, Format: render.JSON, Positions: true})
 	var rep struct {
@@ -2849,10 +2867,12 @@ func TestTests(t *testing.T) {
 		got[p.Path] = fmt.Sprintf("%s changes=%d %s", p.Status, len(p.Changes), strings.Join(tests, ", "))
 	}
 	wantJSON := map[string]string{
-		"example.com/m/fresh": "new changes=0 added TestHello fresh/fresh_test.go",
-		"example.com/m/gone":  "removed changes=0 removed TestGone gone/gone_test.go",
-		"example.com/m/store": "changed changes=0 removed TestClose store/store_test.go, added FuzzOpen store/store_test.go",
-		"example.com/m/util":  "changed changes=0 removed TestUp util/util_test.go, added TestUpper util/util_test.go",
+		"example.com/m/e2e":          "changed changes=0 removed TestE2E e2e/e2e_test.go, added TestEnd e2e/e2e_test.go",
+		"example.com/m/fresh":        "new changes=0 added TestHello fresh/fresh_test.go",
+		"example.com/m/gone":         "removed changes=0 removed TestGone gone/gone_test.go",
+		"example.com/m/internal/hid": "changed changes=0 removed TestHid internal/hid/hid_test.go, added TestHid2 internal/hid/hid_test.go",
+		"example.com/m/store":        "changed changes=0 removed TestClose store/store_test.go, added FuzzOpen store/store_test.go",
+		"example.com/m/util":         "changed changes=0 removed TestUp util/util_test.go, added TestUpper util/util_test.go",
 	}
 	if !maps.Equal(got, wantJSON) {
 		t.Errorf("json packages = %v\nwant %v", got, wantJSON)
@@ -2866,6 +2886,8 @@ func TestTests(t *testing.T) {
 	f.remove("fresh/fresh_test.go")
 	f.write("gone/gone.go", "package gone\n\nfunc Gone() {}\n")
 	f.write("gone/gone_test.go", "package gone\n\nimport \"testing\"\n\nfunc TestGone(t *testing.T) {}\n")
+	f.write("e2e/e2e_test.go", "package e2e\n\nimport \"testing\"\n\nfunc TestE2E(t *testing.T) {}\n")
+	f.write("internal/hid/hid_test.go", "package hid\n\nimport \"testing\"\n\nfunc TestHid(t *testing.T) {}\n")
 	r = f.mustRun("HEAD", "", Options{Kinds: render.Tests})
 	want = "example.com/m/store\n  - func TestClose\n  + func FuzzOpen\n\nno exported API changes\n"
 	if r.stdout != want {
@@ -2948,6 +2970,7 @@ func TestMod(t *testing.T) {
 		Mod []struct {
 			Directive string `json:"directive"`
 			Path      string `json:"path"`
+			Version   string `json:"version"`
 			Kind      string `json:"kind"`
 			Before    string `json:"before"`
 			After     string `json:"after"`
@@ -2965,16 +2988,16 @@ func TestMod(t *testing.T) {
 	}
 	var got []string
 	for _, d := range rep.Mod {
-		got = append(got, fmt.Sprintf("%s %s %q %q %q", d.Kind, d.Directive, d.Path, d.Before, d.After))
+		got = append(got, fmt.Sprintf("%s %s %q %q %q %q", d.Kind, d.Directive, d.Path, d.Version, d.Before, d.After))
 	}
 	wantJSON := []string{
-		`removed require "example.com/gone" "v1.0.0" ""`,
-		`removed replace "example.com/gone v1.0.0" "example.com/fork v1.0.1" ""`,
-		`changed go "" "1.22" "1.24"`,
-		`changed require "example.com/dep" "v1.0.0" "v1.1.0"`,
-		`changed replace "example.com/dep" "../dep" "../dep2"`,
-		`added toolchain "" "" "go1.24.1"`,
-		`added require "example.com/fresh/v2" "" "v2.0.0"`,
+		`removed require "example.com/gone" "" "v1.0.0" ""`,
+		`removed replace "example.com/gone" "v1.0.0" "example.com/fork v1.0.1" ""`,
+		`changed go "" "" "1.22" "1.24"`,
+		`changed require "example.com/dep" "" "v1.0.0" "v1.1.0"`,
+		`changed replace "example.com/dep" "" "../dep" "../dep2"`,
+		`added toolchain "" "" "" "go1.24.1"`,
+		`added require "example.com/fresh/v2" "" "" "v2.0.0"`,
 	}
 	if !slices.Equal(got, wantJSON) {
 		t.Errorf("json mod = %q\nwant %q", got, wantJSON)

@@ -199,10 +199,13 @@ func parse(fs FS, root, gomod string, data []byte, env Env, replaces bool) (*Res
 	for _, req := range mf.Require {
 		r.requires = append(r.requires, req.Mod)
 	}
+	// The parsed file keeps its replace directives either way, for the
+	// diff of go.mod; only resolution ignores them.
+	reps := mf.Replace
 	if !replaces {
-		mf.Replace = nil
+		reps = nil
 	}
-	for _, rep := range mf.Replace {
+	for _, rep := range reps {
 		if rep.New.Version == "" {
 			dir := rep.New.Path
 			if !filepath.IsAbs(dir) && !strings.HasPrefix(dir, "/") {
@@ -227,7 +230,8 @@ func parse(fs FS, root, gomod string, data []byte, env Env, replaces bool) (*Res
 // ModPath returns the main module path.
 func (r *Resolver) ModPath() string { return r.modPath }
 
-// ModFile returns the main module's go.mod as parsed.
+// ModFile returns the main module's go.mod as parsed, its replace
+// directives included whether or not resolution honours them.
 func (r *Resolver) ModFile() *modfile.File { return r.modFile }
 
 // GoVersion returns the main module's go directive.
