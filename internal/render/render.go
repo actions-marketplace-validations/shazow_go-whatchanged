@@ -290,7 +290,7 @@ func (v Visibility) Includes(internal, main bool) bool {
 
 // Kinds is the set of kinds of change that take part in a diff: API
 // changes, import changes and test changes, combined with |. The zero
-// value selects DefaultKinds.
+// value selects DefaultKinds; AllKinds selects everything.
 type Kinds int
 
 const (
@@ -303,8 +303,10 @@ const (
 	Tests
 
 	// DefaultKinds selects the API and import changes: what a diff shows
-	// unless told otherwise. Tests are shown only when asked for.
+	// unless told otherwise.
 	DefaultKinds = API | Imports
+	// AllKinds selects every kind, the tests included.
+	AllKinds = API | Imports | Tests
 )
 
 // Has reports whether k selects every kind in kinds. The zero value

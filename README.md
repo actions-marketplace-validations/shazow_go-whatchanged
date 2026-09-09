@@ -74,10 +74,11 @@ go-whatchanged [options] [<base> [<head>]]
 Options:
   --pkg=PATTERN      diff only packages matching PATTERN (repeatable)
   --exclude=PATTERN  skip packages matching PATTERN (repeatable)
-  --filter=WHICH     all, or any of public | internal | main: which
-                     packages take part; api | imports | tests: which
-                     kinds of change (tests only when named); breaking:
-                     only incompatible changes (default all)
+  --filter=WHICH     default | all, or any of public | internal | main:
+                     which packages take part; api | imports | tests:
+                     which kinds of change; breaking: only incompatible
+                     changes (default: every package, api and imports;
+                     all adds tests)
   --pos              annotate changes with source positions
   --format=LAYOUT    text | markdown (or md) | json (default text)
   --color=WHEN       auto | always | never (default auto; honors NO_COLOR)
@@ -263,10 +264,11 @@ function of the package's test files for the build target, its own and
 its external `_test` package's alike, named as the `go` command names them
 (`TestOpen` and `Test_open` are tests, `Testify` is not); the tests are
 read from their declarations alone, so subtests are not seen. Tests are
-never part of the default: they are shown only when named, alone or with
-the other kinds, `--filter=api,tests`. Like an import change, a test
-change never counts towards the summary, the required release or the exit
-code, and `--filter=breaking` hides it.
+not part of the default: they are shown when named, alone or with the
+other kinds, `--filter=api,tests`, and by `--filter=all`, which shows
+everything. Like an import change, a test change never counts towards the
+summary, the required release or the exit code, and `--filter=breaking`
+hides it.
 
 ```
 $ go-whatchanged --filter=api,tests @latest
@@ -325,9 +327,9 @@ present when the base is a release tag, `pos` with `--pos`, and `struct`
 on a struct field's change, whose `before` and `after` are the field's
 declaration inside it. A package with import changes carries them in
 `imports`, each a `path` and a `kind` of `added` or `removed`, and with
-`--filter=tests` its test changes in `tests`, each a `name`, a `kind` and,
-with `--pos`, a `pos`; a package with import or test changes alone has an
-empty `changes`.
+`--filter=tests` or `--filter=all` its test changes in `tests`, each a
+`name`, a `kind` and, with `--pos`, a `pos`; a package with import or test
+changes alone has an empty `changes`.
 
 ```json
 {

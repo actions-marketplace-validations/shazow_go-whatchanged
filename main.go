@@ -43,11 +43,11 @@ changes call for: "would require: MINOR (v1.4.0 → v1.5.0)".
 matching anything: "store/..." is the store package and everything below
 it. Both may be repeated or given comma-separated lists.
 
---filter=all, the default, lists the public API first, then the internal
-packages and then the main packages (commands), which nothing can import;
-neither of the latter counts towards the summary, the required release or
-the exit code. --filter=public, --filter=internal and --filter=main pick
-the parts to show, and add up: --filter=public,main.
+--filter=default, the default, lists the public API first, then the
+internal packages and then the main packages (commands), which nothing
+can import; neither of the latter counts towards the summary, the
+required release or the exit code. --filter=public, --filter=internal and
+--filter=main pick the parts to show, and add up: --filter=public,main.
 
 Above each package's changes, the diff lists the packages of other modules
 it started or stopped importing, so that a new dependency is as visible as
@@ -59,8 +59,9 @@ the parts: --filter=public,imports.
 --filter=tests adds the changes to the tests: the Test, Benchmark, Fuzz
 and Example functions of each package's test files that appeared or
 disappeared, listed after its API changes. Like an import change, a test
-change never counts. Tests are not part of --filter=all: they are shown
-only when named, alone or with the other kinds, --filter=api,tests.
+change never counts. Tests are not part of the default: they are shown
+when named, alone or with the other kinds, --filter=api,tests, and by
+--filter=all, which is everything: every part and every kind of change.
 
 --filter=breaking narrows the diff to incompatible changes, which no
 import or test change is, and combines with any of the above:
@@ -86,7 +87,7 @@ unless there is an error).`
 type options struct {
 	Pkg        patterns `long:"pkg" value-name:"PATTERN" description:"diff only packages matching PATTERN (example: --pkg store/... --pkg util)"`
 	Exclude    patterns `long:"exclude" value-name:"PATTERN" description:"skip packages matching PATTERN (example: --exclude cmd/...,experimental)"`
-	Filter     filter   `long:"filter" value-name:"WHICH" default:"all" description:"what to diff: all, or any of public, internal and main for the packages, and api, imports and tests for the kinds of change (tests only when named); add breaking to show only incompatible changes; comma-separated or repeatable (example: --filter public,breaking)"`
+	Filter     filter   `long:"filter" value-name:"WHICH" default:"default" description:"what to diff: default (every package, the api and imports changes), all (the tests too), or any of public, internal and main for the packages, and api, imports and tests for the kinds of change; add breaking to show only incompatible changes; comma-separated or repeatable (example: --filter public,breaking)"`
 	Pos        bool     `long:"pos" description:"annotate each change with its source position"`
 	Format     string   `long:"format" choice:"text" choice:"markdown" choice:"md" choice:"json" default:"text" description:"output type"`
 	Color      string   `long:"color" choice:"auto" choice:"always" choice:"never" default:"auto" description:"colorize output (auto honors NO_COLOR)"`
@@ -207,12 +208,12 @@ func (o *options) whatchanged() (whatchanged.Options, error) {
 }
 
 // filter collects the terms of a repeatable, comma-separated --filter flag:
-// "public", "internal" and "main" say which packages take part (all three
-// add up to "all", the default when none is named), "api", "imports" and
-// "tests" which kinds of change (the first two add up to "all", the
-// default; "tests" only counts when named), and "breaking" narrows the
-// diff to incompatible changes. It is a slice so that go-flags drops the
-// default when the flag is given.
+// "public", "internal" and "main" say which packages take part, "api",
+// "imports" and "tests" which kinds of change, and "breaking" narrows the
+// diff to incompatible changes. "default" stands for every package and
+// the default kinds, which is also what a dimension with no term of its
+// own gets, and "all" for every package and every kind. It is a slice so
+// that go-flags drops the default when the flag is given.
 type filter []string
 
 // UnmarshalFlag adds the terms of one flag occurrence, implementing
@@ -223,10 +224,10 @@ func (f *filter) UnmarshalFlag(s string) error {
 		switch term {
 		case "":
 			continue
-		case "all", "public", "internal", "main", "api", "imports", "tests", "breaking":
+		case "default", "all", "public", "internal", "main", "api", "imports", "tests", "breaking":
 			*f = append(*f, term)
 		default:
-			return fmt.Errorf("invalid filter %q (want all, public, internal, main, api, imports, tests or breaking)", term)
+			return fmt.Errorf("invalid filter %q (want default, all, public, internal, main, api, imports, tests or breaking)", term)
 		}
 	}
 	return nil
@@ -236,12 +237,12 @@ func (f *filter) UnmarshalFlag(s string) error {
 func (f filter) MarshalFlag() (string, error) { return strings.Join(f, ","), nil }
 
 // visibility returns the packages the terms select: the parts named, or
-// all of them when "all" or no part at all was named.
+// all of them when "default", "all" or no part at all was named.
 func (f filter) visibility() render.Visibility {
 	var v render.Visibility
 	for _, term := range f {
 		switch term {
-		case "all":
+		case "default", "all":
 			return render.All
 		case "public":
 			v |= render.Public
@@ -258,14 +259,16 @@ func (f filter) visibility() render.Visibility {
 }
 
 // kinds returns the kinds of change the terms select: the kinds named,
-// with "all" standing for the default kinds, which are also what no kind
-// at all selects. Tests are never among the defaults.
+// with "default" standing for the default kinds, which are also what no
+// kind at all selects, and "all" for every kind.
 func (f filter) kinds() render.Kinds {
 	var k render.Kinds
 	for _, term := range f {
 		switch term {
-		case "all":
+		case "default":
 			k |= render.DefaultKinds
+		case "all":
+			k |= render.AllKinds
 		case "api":
 			k |= render.API
 		case "imports":

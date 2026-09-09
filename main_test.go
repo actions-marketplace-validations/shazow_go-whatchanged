@@ -107,7 +107,8 @@ func TestParseArgs(t *testing.T) {
 		{[]string{"--filter=public,internal,main"}, render.All, render.DefaultKinds, false},
 		{[]string{"--filter=main"}, render.Main, render.DefaultKinds, false},
 		{[]string{"--filter=public,main,breaking"}, render.Public | render.Main, render.DefaultKinds, true},
-		{[]string{"--filter=public", "--filter=all"}, render.All, render.DefaultKinds, false},
+		{[]string{"--filter=public", "--filter=default"}, render.All, render.DefaultKinds, false},
+		{[]string{"--filter=public", "--filter=all"}, render.All, render.AllKinds, false},
 		// The kinds of change are a dimension of their own: naming one
 		// leaves the packages alone, and both add up to all of them.
 		{[]string{"--filter=imports"}, render.All, render.Imports, false},
@@ -115,11 +116,13 @@ func TestParseArgs(t *testing.T) {
 		{[]string{"--filter=public,imports"}, render.Public, render.Imports, false},
 		{[]string{"--filter=api,imports"}, render.All, render.DefaultKinds, false},
 		{[]string{"--filter", "api", "--filter", "breaking"}, render.All, render.API, true},
-		{[]string{"--filter=imports", "--filter=all"}, render.All, render.DefaultKinds, false},
-		// Tests are a kind of their own that all does not include.
+		{[]string{"--filter=imports", "--filter=default"}, render.All, render.DefaultKinds, false},
+		// Tests are a kind that default leaves out and all includes.
 		{[]string{"--filter=tests"}, render.All, render.Tests, false},
 		{[]string{"--filter=api,tests"}, render.All, render.API | render.Tests, false},
-		{[]string{"--filter=all,tests"}, render.All, render.DefaultKinds | render.Tests, false},
+		{[]string{"--filter=default,tests"}, render.All, render.AllKinds, false},
+		{[]string{"--filter=all"}, render.All, render.AllKinds, false},
+		{[]string{"--filter=public,all"}, render.All, render.AllKinds, false},
 		{[]string{"--filter=public,tests,breaking"}, render.Public, render.Tests, true},
 	} {
 		o, err := parseArgs(tc.args)
