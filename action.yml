@@ -40,15 +40,16 @@ inputs:
     default: ""
   filter:
     description: >-
-      What takes part: default (the public API first, then the internal
-      packages, then the main packages, with the changes to each package's
-      imports of other modules above its API changes), all (the test
-      functions that came or went too, after each package's API changes),
-      or any of public (the importable API alone), internal and main for
-      the packages, and api, imports and tests for the kinds of change,
-      comma-separated (public,main; public,api; default,tests). Internal
-      and main packages and import and test changes are listed but never
-      count towards the summary, the outputs or fail-on.
+      What takes part: default (the go.mod changes, then the public API,
+      then the internal packages, then the main packages, with the
+      changes to each package's imports of other modules above its API
+      changes), all (the test functions that came or went too, after
+      each package's API changes), or any of public (the importable API
+      alone), internal and main for the packages, and api, imports, mod
+      and tests for the kinds of change, comma-separated (public,main;
+      public,api; default,tests). Internal and main packages and go.mod,
+      import and test changes are listed but never count towards the
+      summary, the outputs or fail-on.
     required: false
     default: default
   breaking:

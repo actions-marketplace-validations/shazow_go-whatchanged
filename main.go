@@ -56,6 +56,11 @@ towards the summary, the required release or the exit code. --filter=api
 leaves them out and --filter=imports shows nothing else; both combine with
 the parts: --filter=public,imports.
 
+Above the packages, the diff lists the changes to go.mod as a block of
+its own: the go and toolchain directives, the direct requirements and
+the replacements that appeared, disappeared or changed. Like import
+changes, they never count; --filter=mod shows them alone.
+
 --filter=tests adds the changes to the tests: the Test, Benchmark, Fuzz
 and Example functions of each package's test files that appeared or
 disappeared, listed after its API changes. Like an import change, a test
@@ -87,7 +92,7 @@ unless there is an error).`
 type options struct {
 	Pkg        patterns `long:"pkg" value-name:"PATTERN" description:"diff only packages matching PATTERN (example: --pkg store/... --pkg util)"`
 	Exclude    patterns `long:"exclude" value-name:"PATTERN" description:"skip packages matching PATTERN (example: --exclude cmd/...,experimental)"`
-	Filter     filter   `long:"filter" value-name:"WHICH" default:"default" description:"what to diff: default (every package, the api and imports changes), all (the tests too), or any of public, internal and main for the packages, and api, imports and tests for the kinds of change; add breaking to show only incompatible changes; comma-separated or repeatable (example: --filter public,breaking)"`
+	Filter     filter   `long:"filter" value-name:"WHICH" default:"default" description:"what to diff: default (every package, the api, imports and mod changes), all (the tests too), or any of public, internal and main for the packages, and api, imports, mod and tests for the kinds of change; add breaking to show only incompatible changes; comma-separated or repeatable (example: --filter public,breaking)"`
 	Pos        bool     `long:"pos" description:"annotate each change with its source position"`
 	Format     string   `long:"format" choice:"text" choice:"markdown" choice:"md" choice:"json" default:"text" description:"output type"`
 	Color      string   `long:"color" choice:"auto" choice:"always" choice:"never" default:"auto" description:"colorize output (auto honors NO_COLOR)"`
@@ -209,7 +214,7 @@ func (o *options) whatchanged() (whatchanged.Options, error) {
 
 // filter collects the terms of a repeatable, comma-separated --filter flag:
 // "public", "internal" and "main" say which packages take part, "api",
-// "imports" and "tests" which kinds of change, and "breaking" narrows the
+// "imports", "mod" and "tests" which kinds of change, and "breaking" narrows the
 // diff to incompatible changes. "default" stands for every package and
 // the default kinds, which is also what a dimension with no term of its
 // own gets, and "all" for every package and every kind. It is a slice so
@@ -224,10 +229,10 @@ func (f *filter) UnmarshalFlag(s string) error {
 		switch term {
 		case "":
 			continue
-		case "default", "all", "public", "internal", "main", "api", "imports", "tests", "breaking":
+		case "default", "all", "public", "internal", "main", "api", "imports", "mod", "tests", "breaking":
 			*f = append(*f, term)
 		default:
-			return fmt.Errorf("invalid filter %q (want default, all, public, internal, main, api, imports, tests or breaking)", term)
+			return fmt.Errorf("invalid filter %q (want default, all, public, internal, main, api, imports, mod, tests or breaking)", term)
 		}
 	}
 	return nil
@@ -273,6 +278,8 @@ func (f filter) kinds() render.Kinds {
 			k |= render.API
 		case "imports":
 			k |= render.Imports
+		case "mod":
+			k |= render.Mod
 		case "tests":
 			k |= render.Tests
 		}

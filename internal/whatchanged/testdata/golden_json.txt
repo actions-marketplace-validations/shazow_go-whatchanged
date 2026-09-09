@@ -4,6 +4,14 @@
   "head": "working tree",
   "base_version": "v1.0.0",
   "next_version": "v2.0.0",
+  "mod": [
+    {
+      "directive": "require",
+      "path": "example.com/dep",
+      "kind": "added",
+      "after": "v1.0.0"
+    }
+  ],
   "packages": [
     {
       "path": "example.com/m/deps",

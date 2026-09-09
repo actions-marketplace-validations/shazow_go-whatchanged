@@ -1853,7 +1853,7 @@ func TestDependencyPinnedToDifferentVersionsIsNotShared(t *testing.T) {
 	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire (\n\texample.com/p v1.0.0\n\texample.com/q v1.1.0\n)\n")
 
 	for i := range 5 {
-		r := f.mustRun("HEAD", "", Options{})
+		r := f.mustRun("HEAD", "", Options{Kinds: render.API})
 		if r.stderr != "" {
 			t.Fatalf("run %d: stderr = %q, want none", i, r.stderr)
 		}
@@ -2249,7 +2249,7 @@ func TestPromotedMembersFromDependency(t *testing.T) {
 	f.commit("base")
 	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.com/dep v1.1.0\n")
 
-	r := f.mustRun("HEAD", "", Options{Positions: true})
+	r := f.mustRun("HEAD", "", Options{Positions: true, Kinds: render.API})
 	want := "example.com/m/a\n" +
 		"  ~ example.com/dep.(*Base).M: changed\n" +
 		"      - func(func(from string, to string))\n" +
@@ -2260,7 +2260,7 @@ func TestPromotedMembersFromDependency(t *testing.T) {
 		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
 	}
 
-	r = f.mustRun("HEAD", "", Options{Positions: true, Format: render.JSON})
+	r = f.mustRun("HEAD", "", Options{Positions: true, Kinds: render.API, Format: render.JSON})
 	mustContain(t, r.stdout, `"before": "func(func(from string, to string))"`, `"after": "func(func(from string, to string)) error"`)
 	mustNotContain(t, r.stdout, `"pos"`)
 }
@@ -2876,5 +2876,107 @@ func TestTests(t *testing.T) {
 	}
 	if r.stdout = f.mustRun("HEAD", "", Options{}).stdout; r.stdout != "no exported API changes\n" {
 		t.Errorf("stdout = %q", r.stdout)
+	}
+}
+
+// TestMod covers go.mod changes: the go and toolchain directives, the
+// direct requirements and the replacements that appeared, disappeared or
+// changed are listed as a block of their own named go.mod above the
+// packages, removals first, then edits, then additions, in every layout,
+// and never count. Indirect requirements are not tracked. --filter=mod
+// shows the block alone, --filter=api leaves it out, and breaking hides
+// it as a compatible change.
+func TestMod(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.write("go.mod", "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/dep v1.0.0\n\texample.com/gone v1.0.0\n\texample.com/indirect v1.0.0 // indirect\n)\n\nreplace example.com/dep => ../dep\n\nreplace example.com/gone v1.0.0 => example.com/fork v1.0.1\n")
+	f.write("p/p.go", "package p\n\nfunc P() {}\n")
+	f.commit("base")
+
+	// The go directive rises and a toolchain appears; dep is bumped and
+	// its replacement retargeted, gone is dropped with its replacement,
+	// fresh is added, and the indirect requirement is bumped unseen.
+	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\ntoolchain go1.24.1\n\nrequire (\n\texample.com/dep v1.1.0\n\texample.com/fresh/v2 v2.0.0\n\texample.com/indirect v1.2.0 // indirect\n)\n\nreplace example.com/dep => ../dep2\n")
+
+	r := f.mustRun("HEAD", "", Options{})
+	want := "go.mod\n" +
+		"  - require example.com/gone v1.0.0\n" +
+		"  - replace example.com/gone v1.0.0 => example.com/fork v1.0.1\n" +
+		"  - go 1.22\n" +
+		"  + go 1.24\n" +
+		"  - require example.com/dep v1.0.0\n" +
+		"  + require example.com/dep v1.1.0\n" +
+		"  - replace example.com/dep => ../dep\n" +
+		"  + replace example.com/dep => ../dep2\n" +
+		"  + toolchain go1.24.1\n" +
+		"  + require example.com/fresh/v2 v2.0.0\n\n" +
+		"no exported API changes\n"
+	if r.stdout != want {
+		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
+	}
+	if r.code != ExitClean {
+		t.Errorf("exit = %d, want %d", r.code, ExitClean)
+	}
+	if r.stderr != "" {
+		t.Errorf("stderr = %q", r.stderr)
+	}
+	mustNotContain(t, r.stdout, "indirect")
+
+	// The block alone is the same; the API alone has nothing, and so does
+	// breaking.
+	if r = f.mustRun("HEAD", "", Options{Kinds: render.Mod}); r.stdout != want {
+		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
+	}
+	for _, opts := range []Options{{Kinds: render.API}, {Breaking: true}} {
+		if r = f.mustRun("HEAD", "", opts); r.stdout != "no exported API changes\n" {
+			t.Errorf("%+v: stdout = %q", opts, r.stdout)
+		}
+	}
+
+	// Positions locate the directive on the side it is described from.
+	r = f.mustRun("HEAD", "", Options{Positions: true})
+	mustContain(t, r.stdout,
+		"  - require example.com/gone v1.0.0                             HEAD:go.mod:7:2\n",
+		"  - go 1.22\n  + go 1.24                                                     go.mod:3:1\n",
+		"  + toolchain go1.24.1                                          go.mod:5:1\n")
+
+	r = f.mustRun("HEAD", "", Options{Format: render.Markdown})
+	mustContain(t, r.stdout, "### `go.mod`\n\n```go\n// Removed\nrequire example.com/gone v1.0.0\nreplace example.com/gone v1.0.0 => example.com/fork v1.0.1\n\n// Changed\ngo 1.22 // ->\ngo 1.24\n\nrequire example.com/dep v1.0.0 // ->\nrequire example.com/dep v1.1.0\n\nreplace example.com/dep => ../dep // ->\nreplace example.com/dep => ../dep2\n\n// Added\ntoolchain go1.24.1\nrequire example.com/fresh/v2 v2.0.0\n```\n\n_no exported API changes_\n")
+
+	r = f.mustRun("HEAD", "", Options{Format: render.JSON})
+	var rep struct {
+		Mod []struct {
+			Directive string `json:"directive"`
+			Path      string `json:"path"`
+			Kind      string `json:"kind"`
+			Before    string `json:"before"`
+			After     string `json:"after"`
+		} `json:"mod"`
+		Packages []json.RawMessage `json:"packages"`
+		Summary  struct {
+			PackagesChanged int `json:"packages_changed"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(r.stdout), &rep); err != nil {
+		t.Fatalf("%v\n%s", err, r.stdout)
+	}
+	if len(rep.Packages) != 0 || rep.Summary.PackagesChanged != 0 {
+		t.Errorf("packages = %d, packages_changed = %d, want none", len(rep.Packages), rep.Summary.PackagesChanged)
+	}
+	var got []string
+	for _, d := range rep.Mod {
+		got = append(got, fmt.Sprintf("%s %s %q %q %q", d.Kind, d.Directive, d.Path, d.Before, d.After))
+	}
+	wantJSON := []string{
+		`removed require "example.com/gone" "v1.0.0" ""`,
+		`removed replace "example.com/gone v1.0.0" "example.com/fork v1.0.1" ""`,
+		`changed go "" "1.22" "1.24"`,
+		`changed require "example.com/dep" "v1.0.0" "v1.1.0"`,
+		`changed replace "example.com/dep" "../dep" "../dep2"`,
+		`added toolchain "" "" "go1.24.1"`,
+		`added require "example.com/fresh/v2" "" "v2.0.0"`,
+	}
+	if !slices.Equal(got, wantJSON) {
+		t.Errorf("json mod = %q\nwant %q", got, wantJSON)
 	}
 }

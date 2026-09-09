@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -154,12 +155,65 @@ func kind(removed bool) string {
 	return "added"
 }
 
+// Directive is a change to a directive of the module's go.mod: the go or
+// toolchain directive, a direct requirement or a replacement, with Path
+// naming the module for the latter two (for a replacement, with its
+// version when the directive names one). Before is the old value and After
+// the new: the version, the toolchain name or the replacement target; one
+// is empty for a directive that appeared or disappeared. Like an import,
+// a directive change is not part of the API and never counts; the layouts
+// list the changes as a block of their own named go.mod above the
+// packages, as compatible removals, additions and edits of lines such as
+// "require example.com/dep v1.2.0". Pos locates the directive: on the
+// base side for a removal, on the head side otherwise.
+type Directive struct {
+	Name   string // "go", "toolchain", "require" or "replace"
+	Path   string
+	Before string
+	After  string
+	Pos    Position
+}
+
+// Kind classifies the change as "added", "removed" or "changed".
+func (d Directive) Kind() string {
+	switch {
+	case d.Before == "":
+		return "added"
+	case d.After == "":
+		return "removed"
+	}
+	return "changed"
+}
+
+// decl is the go.mod line for the directive with value v.
+func (d Directive) decl(v string) string {
+	if d.Name == "replace" {
+		v = "=> " + v
+	}
+	return strings.Join(slices.DeleteFunc([]string{d.Name, d.Path, v}, func(s string) bool { return s == "" }), " ")
+}
+
+// line reduces the change to a line: the old and new go.mod lines, one of
+// them empty for a removal or an addition.
+func (d Directive) line() line {
+	var from, to string
+	if d.Before != "" {
+		from = d.decl(d.Before)
+	}
+	if d.After != "" {
+		to = d.decl(d.After)
+	}
+	return describeDecl(from, to)
+}
+
 // Package is the diff of one package. An Internal package (one below an
 // internal directory) or a Main package (a command) is shown but kept out
 // of the public API's counts and required release level. Imports are the
 // changes to the packages of other modules it imports and Tests those to
 // its test functions; a package with import or test changes alone is
-// listed but does not count as changed.
+// listed but does not count as changed. Mod is set on one entry alone,
+// the go.mod block the layouts synthesize from Result.Mod, which has
+// nothing else.
 type Package struct {
 	Path     string
 	Status   Status
@@ -168,12 +222,16 @@ type Package struct {
 	Changes  []Change
 	Imports  []Import
 	Tests    []Test
+	Mod      []Directive
 }
 
 // empty reports whether p has nothing to show, whatever the Options.
 func (p Package) empty() bool {
-	return len(p.Changes) == 0 && len(p.Imports) == 0 && len(p.Tests) == 0
+	return len(p.Changes) == 0 && len(p.Imports) == 0 && len(p.Tests) == 0 && len(p.Mod) == 0
 }
+
+// modFile is the path the go.mod block is listed under.
+const modFile = "go.mod"
 
 // part returns the part of the module the package belongs to: Main for a
 // command, whatever its directory, Internal for a package below an internal
@@ -206,6 +264,9 @@ type Result struct {
 	BaseVersion, NextVersion string
 
 	Packages []Package // sorted by path; packages without changes may be included and are skipped
+	// Mod is the changes to the module's go.mod, removals first, then
+	// edits, then additions, each in the file's order of directives.
+	Mod      []Directive
 	Warnings []Warning
 }
 
@@ -289,8 +350,9 @@ func (v Visibility) Includes(internal, main bool) bool {
 }
 
 // Kinds is the set of kinds of change that take part in a diff: API
-// changes, import changes and test changes, combined with |. The zero
-// value selects DefaultKinds; AllKinds selects everything.
+// changes, import changes, go.mod changes and test changes, combined
+// with |. The zero value selects DefaultKinds; AllKinds selects
+// everything.
 type Kinds int
 
 const (
@@ -299,14 +361,16 @@ const (
 	API Kinds = 1 << iota
 	// Imports selects the changes to the imports of other modules.
 	Imports
+	// Mod selects the changes to the directives of go.mod.
+	Mod
 	// Tests selects the changes to the test functions.
 	Tests
 
-	// DefaultKinds selects the API and import changes: what a diff shows
-	// unless told otherwise.
-	DefaultKinds = API | Imports
+	// DefaultKinds selects the API, import and go.mod changes: what a
+	// diff shows unless told otherwise.
+	DefaultKinds = API | Imports | Mod
 	// AllKinds selects every kind, the tests included.
-	AllKinds = API | Imports | Tests
+	AllKinds = DefaultKinds | Tests
 )
 
 // Has reports whether k selects every kind in kinds. The zero value
@@ -321,12 +385,13 @@ func (k Kinds) Has(kinds Kinds) bool {
 // Options controls rendering.
 type Options struct {
 	Color bool
-	// BreakingOnly hides compatible changes, import and test changes
-	// among them.
+	// BreakingOnly hides compatible changes, import, go.mod and test
+	// changes among them.
 	BreakingOnly bool
 	// Kinds says which kinds of change are shown: the API changes, the
-	// import changes, the test changes or, the default, the first two. The
-	// summary always counts the API changes of the full diff.
+	// import changes, the go.mod changes, the test changes or, the
+	// default, all but the tests. The summary always counts the API
+	// changes of the full diff.
 	Kinds  Kinds
 	Format Format
 	// Positions annotates each change with the position of its declaration.
@@ -474,6 +539,9 @@ type line struct {
 	strct      string // the struct the declarations are a field of, or ""
 	pos        string // "" when unknown or not wanted
 	compatible bool
+	// neutral marks a line that is not an API change (an import, a test,
+	// a go.mod directive), whose compatibility is nothing to note.
+	neutral bool
 }
 
 // item is one entry of a package's listing: a change, or the field changes
@@ -549,25 +617,50 @@ func describe(c Change, opts Options) line {
 	return l
 }
 
-// describeDecl reduces the addition or removal of a declaration that is
-// not part of the API, an import or a test, to a line: the declaration on
-// a "-" or a "+" line, compatible either way.
-func describeDecl(decl string, removed bool) line {
-	if removed {
-		return line{glyph: "-", kind: "removed", head: decl, from: decl, decls: true, compatible: true}
+// describeDecl reduces a change to a declaration that is not part of the
+// API (an import, a test, a go.mod directive) to a line: from on a "-"
+// line for a removal, to on a "+" line for an addition, or both as a
+// small patch for an edit, compatible in every case.
+func describeDecl(from, to string) line {
+	l := line{from: from, to: to, decls: true, compatible: true, neutral: true}
+	switch {
+	case to == "":
+		l.glyph, l.kind, l.head = "-", "removed", from
+	case from == "":
+		l.glyph, l.kind, l.head = "+", "added", to
+	default:
+		l.glyph, l.kind, l.head = "~", "changed", to
 	}
-	return line{glyph: "+", kind: "added", head: decl, to: decl, decls: true, compatible: true}
+	return l
+}
+
+// edit is the from and to of a declaration that was removed or added.
+func edit(decl string, removed bool) (from, to string) {
+	if removed {
+		return decl, ""
+	}
+	return "", decl
 }
 
 // lines reduces the changes of p to show to lines, honoring Kinds and
-// BreakingOnly, which hides the import and test changes along with every
-// other compatible one: the imports first, removed before added, then the
-// changes in order, then the tests, removed before added.
+// BreakingOnly, which hides the import, go.mod and test changes along
+// with every other compatible one: the imports first, removed before
+// added, then the changes in order, then the tests, removed before added.
+// The go.mod block has its directives alone, in Result.Mod's order.
 func (p Package) lines(opts Options) []line {
 	var lines []line
+	if opts.Kinds.Has(Mod) && !opts.BreakingOnly {
+		for _, d := range p.Mod {
+			l := d.line()
+			if opts.Positions {
+				l.pos = d.Pos.String()
+			}
+			lines = append(lines, l)
+		}
+	}
 	if opts.Kinds.Has(Imports) && !opts.BreakingOnly {
 		for _, i := range p.Imports {
-			lines = append(lines, describeDecl(i.decl(), i.Removed))
+			lines = append(lines, describeDecl(edit(i.decl(), i.Removed)))
 		}
 	}
 	if opts.Kinds.Has(API) {
@@ -580,7 +673,7 @@ func (p Package) lines(opts Options) []line {
 	}
 	if opts.Kinds.Has(Tests) && !opts.BreakingOnly {
 		for _, t := range p.Tests {
-			l := describeDecl(t.decl(), t.Removed)
+			l := describeDecl(edit(t.decl(), t.Removed))
 			if opts.Positions {
 				l.pos = t.Pos.String()
 			}
@@ -795,7 +888,8 @@ type section struct {
 // API comes first, reduced to its summary line when nothing changed, then
 // the internal packages and then the main packages (which never are
 // public, wherever they live); when the public API is shown, the other
-// sections appear only when some package in them changed.
+// sections appear only when some package in them changed. The go.mod
+// block, when it has lines to show, opens the first section.
 func sections(res Result, opts Options) []section {
 	f := opts.Filter
 	var out []section
@@ -820,6 +914,12 @@ func sections(res Result, opts Options) []section {
 			if rows, _ := packageRows(p, opts, 0, 0); len(rows) > 0 {
 				out[i].packages = append(out[i].packages, p)
 			}
+		}
+	}
+	if len(out) > 0 {
+		mod := Package{Path: modFile, Mod: res.Mod}
+		if rows, _ := packageRows(mod, opts, 0, 0); len(rows) > 0 {
+			out[0].packages = slices.Insert(out[0].packages, 0, mod)
 		}
 	}
 	return out
@@ -1168,7 +1268,7 @@ func (l line) goItem() goItem {
 	switch {
 	case l.kind == "added" && !l.compatible:
 		notes = append(notes, "incompatible")
-	case l.kind == "changed" && l.compatible:
+	case l.kind == "changed" && l.compatible && !l.neutral:
 		notes = append(notes, "compatible")
 	}
 	if l.pos != "" {
@@ -1198,14 +1298,24 @@ func (l line) goItem() goItem {
 }
 
 // JSON layout. Field names are part of the tool's interface.
+type jsonDirective struct {
+	Directive string    `json:"directive"`
+	Path      string    `json:"path,omitempty"`
+	Kind      string    `json:"kind"`
+	Before    string    `json:"before,omitempty"`
+	After     string    `json:"after,omitempty"`
+	Pos       *Position `json:"pos,omitempty"`
+}
+
 type jsonReport struct {
-	Base        string        `json:"base"`
-	Head        string        `json:"head"`
-	BaseVersion string        `json:"base_version,omitempty"`
-	NextVersion string        `json:"next_version,omitempty"`
-	Packages    []jsonPackage `json:"packages"`
-	Warnings    []Warning     `json:"warnings"`
-	Summary     jsonSummary   `json:"summary"`
+	Base        string          `json:"base"`
+	Head        string          `json:"head"`
+	BaseVersion string          `json:"base_version,omitempty"`
+	NextVersion string          `json:"next_version,omitempty"`
+	Mod         []jsonDirective `json:"mod,omitempty"`
+	Packages    []jsonPackage   `json:"packages"`
+	Warnings    []Warning       `json:"warnings"`
+	Summary     jsonSummary     `json:"summary"`
 }
 
 type jsonPackage struct {
@@ -1319,6 +1429,11 @@ func writeJSON(w io.Writer, res Result, opts Options) error {
 			continue
 		}
 		rep.Packages = append(rep.Packages, jp)
+	}
+	if opts.Kinds.Has(Mod) && !opts.BreakingOnly {
+		for _, d := range res.Mod {
+			rep.Mod = append(rep.Mod, jsonDirective{Directive: d.Name, Path: d.Path, Kind: d.Kind(), Before: d.Before, After: d.After, Pos: position(d.Pos, opts)})
+		}
 	}
 	rep.Warnings = append(rep.Warnings, res.Warnings...)
 

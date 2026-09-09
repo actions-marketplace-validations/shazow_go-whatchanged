@@ -112,9 +112,11 @@ func TestParseArgs(t *testing.T) {
 		// The kinds of change are a dimension of their own: naming one
 		// leaves the packages alone, and both add up to all of them.
 		{[]string{"--filter=imports"}, render.All, render.Imports, false},
+		{[]string{"--filter=mod"}, render.All, render.Mod, false},
+		{[]string{"--filter=api,mod"}, render.All, render.API | render.Mod, false},
 		{[]string{"--filter=api"}, render.All, render.API, false},
 		{[]string{"--filter=public,imports"}, render.Public, render.Imports, false},
-		{[]string{"--filter=api,imports"}, render.All, render.DefaultKinds, false},
+		{[]string{"--filter=api,imports,mod"}, render.All, render.DefaultKinds, false},
 		{[]string{"--filter", "api", "--filter", "breaking"}, render.All, render.API, true},
 		{[]string{"--filter=imports", "--filter=default"}, render.All, render.DefaultKinds, false},
 		// Tests are a kind that default leaves out and all includes.

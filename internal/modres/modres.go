@@ -126,6 +126,7 @@ type Resolver struct {
 	root      string // main module root
 	modPath   string
 	goVersion string
+	modFile   *modfile.File
 	requires  []module.Version
 	replaces  map[module.Version]replacement
 	stdGo     string
@@ -191,6 +192,7 @@ func parse(fs FS, root, gomod string, data []byte, env Env, replaces bool) (*Res
 		root:       root,
 		modPath:    mf.Module.Mod.Path,
 		goVersion:  goVersion,
+		modFile:    mf,
 		replaces:   map[module.Version]replacement{},
 		goVersions: map[string]string{},
 	}
@@ -224,6 +226,9 @@ func parse(fs FS, root, gomod string, data []byte, env Env, replaces bool) (*Res
 
 // ModPath returns the main module path.
 func (r *Resolver) ModPath() string { return r.modPath }
+
+// ModFile returns the main module's go.mod as parsed.
+func (r *Resolver) ModFile() *modfile.File { return r.modFile }
 
 // GoVersion returns the main module's go directive.
 func (r *Resolver) GoVersion() string { return r.goVersion }

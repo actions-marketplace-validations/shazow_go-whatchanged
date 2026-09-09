@@ -19,12 +19,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"golang.org/x/exp/apidiff"
+	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
 
 	"github.com/shazow/go-whatchanged/internal/discover"
@@ -67,13 +69,17 @@ type Options struct {
 	// Positions annotates each change with the position of its declaration.
 	Positions bool
 	// Kinds selects which kinds of change are shown: the API changes,
-	// the import changes, the test changes or, the zero value, the first
-	// two. An import change is a package of another module that a package
-	// started or stopped importing, listed before the package's API
-	// changes; the standard library and the module's own packages are not
-	// tracked. A test change is a test function of the package's test
+	// the import changes, the go.mod changes, the test changes or, the
+	// zero value, all but the tests. An import change is a package of
+	// another module that a package started or stopped importing, listed
+	// before the package's API changes; the standard library and the
+	// module's own packages are not tracked. A go.mod change is a
+	// directive of the module's go.mod that appeared, disappeared or
+	// changed, the go and toolchain directives, the direct requirements
+	// and the replacements, listed as a block of their own above the
+	// packages. A test change is a test function of the package's test
 	// files that appeared or disappeared, listed after its API changes.
-	// Neither is an API change: they never count towards the summary, the
+	// None is an API change: they never count towards the summary, the
 	// required release or the exit code, and a package with import or
 	// test changes alone is listed without counting as changed.
 	Kinds render.Kinds
@@ -335,6 +341,7 @@ type side struct {
 	main      map[string]bool          // import paths of main packages
 	imports   map[string][]string      // the packages of other modules each package imports
 	tests     map[string][]render.Test // the test functions of each package, none marked Removed
+	mod       []directive              // the directives of go.mod, in canonical order
 	all       []string                 // every import path Options.Filter selects, before Options.Packages and Exclude
 	problem   map[string]string
 	notes     []string // module-level warnings, reported under the module path
@@ -632,6 +639,9 @@ func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, 
 	if opts.Kinds.Has(render.Tests) {
 		s.tests = make(map[string][]render.Test)
 	}
+	if opts.Kinds.Has(render.Mod) {
+		s.mod = s.directives()
+	}
 	filter := discover.NewFilter(opts.Packages, opts.Exclude)
 	paths := make([]string, 0, len(found))
 	for p := range found {
@@ -744,8 +754,80 @@ func diffSides(base, head *side, fset *token.FileSet) *render.Result {
 		res.Packages = append(res.Packages, pkg)
 	}
 
+	res.Mod = diffMod(base, head)
 	res.Warnings = collectWarnings(base, head)
 	return res
+}
+
+// directive is one directive of a side's go.mod: the go or toolchain
+// directive, a direct requirement or a replacement. path names the module
+// for the latter two, with its version for a replacement that names one;
+// value is the version, the toolchain or the replacement target.
+type directive struct {
+	name, path, value string
+	pos               render.Position
+}
+
+// key identifies the directive across the two sides, and sorts the
+// directives in the file's order: go, toolchain, require, replace, each
+// by path.
+func (d directive) key() string {
+	return strconv.Itoa(slices.Index([]string{"go", "toolchain", "require", "replace"}, d.name)) + " " + d.path
+}
+
+// directives lists the directives of the side's go.mod in key order.
+// Indirect requirements are left out: they are the dependencies'
+// business, and change with every tidy.
+func (s *side) directives() []directive {
+	mf := s.res.ModFile()
+	file := s.prefix + "go.mod"
+	at := func(l *modfile.Line) render.Position {
+		return s.position(token.Position{Filename: file, Line: l.Start.Line, Column: l.Start.LineRune})
+	}
+	var out []directive
+	if mf.Go != nil {
+		out = append(out, directive{name: "go", value: mf.Go.Version, pos: at(mf.Go.Syntax)})
+	}
+	if mf.Toolchain != nil {
+		out = append(out, directive{name: "toolchain", value: mf.Toolchain.Name, pos: at(mf.Toolchain.Syntax)})
+	}
+	for _, r := range mf.Require {
+		if !r.Indirect {
+			out = append(out, directive{name: "require", path: r.Mod.Path, value: r.Mod.Version, pos: at(r.Syntax)})
+		}
+	}
+	for _, r := range mf.Replace {
+		out = append(out, directive{name: "replace", path: strings.TrimSpace(r.Old.Path + " " + r.Old.Version),
+			value: strings.TrimSpace(r.New.Path + " " + r.New.Version), pos: at(r.Syntax)})
+	}
+	slices.SortFunc(out, func(a, b directive) int { return strings.Compare(a.key(), b.key()) })
+	return out
+}
+
+// diffMod lists the go.mod directives of base that head lacks as removed,
+// those whose value differs as changed and those of head that base lacks
+// as added, in that order, each group in key order. A directive is
+// located on the side it is described from: the base for a removal, the
+// head otherwise.
+func diffMod(base, head *side) []render.Directive {
+	key := directive.key
+	var out []render.Directive
+	for _, d := range missing(base.mod, head.mod, key) {
+		out = append(out, render.Directive{Name: d.name, Path: d.path, Before: d.value, Pos: d.pos})
+	}
+	old := map[string]directive{}
+	for _, d := range base.mod {
+		old[d.key()] = d
+	}
+	for _, d := range head.mod {
+		if o, ok := old[d.key()]; ok && o.value != d.value {
+			out = append(out, render.Directive{Name: d.name, Path: d.path, Before: o.value, After: d.value, Pos: d.pos})
+		}
+	}
+	for _, d := range missing(head.mod, base.mod, key) {
+		out = append(out, render.Directive{Name: d.name, Path: d.path, After: d.value, Pos: d.pos})
+	}
+	return out
 }
 
 // dependencies returns the imports of a package in dir that other modules
