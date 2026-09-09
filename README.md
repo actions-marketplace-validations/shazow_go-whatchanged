@@ -195,13 +195,8 @@ go-whatchanged --format=json @latest | jq .summary
 Internal packages are listed after the public API with a summary line of
 their own, as above, and `main` packages, which nothing can import, after
 them in a section of theirs; neither counts towards the public API's
-totals or the exit code. `--filter` picks the sections: `--filter=public`
-for the importable API alone, `--filter=main` for the commands alone,
-`--filter=public,main` for both. It also picks the kinds of change,
-`--filter=api`, `--filter=imports` (see [Import changes](#import-changes))
-or `--filter=tests` (see [Test changes](#test-changes)), and
-`--filter=breaking` narrows the diff to incompatible changes; with either,
-the counts in the summary still describe the full diff.
+totals or the exit code. `--filter` picks the sections and the kinds of
+change; see [Filters](#filters).
 
 ## Reading the output
 
@@ -233,11 +228,8 @@ count towards the summary, the required release or the exit code, and a
 package whose imports alone changed is listed without counting as changed.
 They are compatible, so `--filter=breaking` hides them.
 
-`--filter=imports` shows the import changes alone, for the question of
-which packages picked up or dropped a dependency, and `--filter=api` the
-API changes alone; either combines with the parts, `--filter=public,api`.
-Here is what an upgrade of testify did, where `assert` moved its YAML
-dependency behind a package of its own:
+With `--filter=imports`, here is what an upgrade of testify did, where
+`assert` moved its YAML dependency behind a package of its own:
 
 ```
 $ go-whatchanged --filter=imports github.com/stretchr/testify@v1.9.0 @v1.10.0
@@ -254,29 +246,57 @@ The imports are those of the package's non-test files for the build
 target, as the `go` command sees them; `import "C"` is never among them,
 since cgo is disabled.
 
-### Test changes
+### Filters
 
-`--filter=tests` lists, after each package's changes, the test functions
-that appeared or disappeared, as `func TestName` lines on `+` and `-`
-rows: a review sees the tests a change brought along with the API it
-touched. A test function is a `Test`, `Benchmark`, `Fuzz` or `Example`
-function of the package's test files for the build target, its own and
-its external `_test` package's alike, named as the `go` command names them
-(`TestOpen` and `Test_open` are tests, `Testify` is not); the tests are
-read from their declarations alone, so subtests are not seen. Tests are
-not part of the default: they are shown when named, alone or with the
-other kinds, `--filter=api,tests`, and by `--filter=all`, which shows
-everything. Like an import change, a test change never counts towards the
-summary, the required release or the exit code, and `--filter=breaking`
-hides it.
+`--filter` takes terms, comma-separated or repeated, along two
+dimensions: which packages take part and which kinds of change are
+shown. Terms of one dimension add up; a dimension with no term keeps its
+default. Whatever is shown, the summary, the required release and the
+exit code always describe the public API changes of the full diff.
+
+| Term | Selects |
+|---|---|
+| `public` | packages importable from outside the module |
+| `internal` | packages below an `internal` directory |
+| `main` | `main` packages, wherever they live |
+| `api` | changes to the exported API, as apidiff reports them |
+| `imports` | packages of other modules a package started or stopped importing |
+| `tests` | test functions that appeared or disappeared |
+| `default` | every package, `api` and `imports`: the default |
+| `all` | every package and every kind, `tests` included |
+| `breaking` | only incompatible changes, on top of any of the above |
+
+A test function is a `Test`, `Benchmark`, `Fuzz` or `Example` function of
+the package's test files for the build target, its own and its external
+`_test` package's alike, named as the `go` command names them (`TestOpen`
+and `Test_open` are tests, `Testify` is not). Tests are read from their
+declarations alone, so subtests are not seen. Import and test changes
+are never API changes: they do not count, and `breaking` hides them.
 
 ```
-$ go-whatchanged --filter=api,tests @latest
+go-whatchanged --filter=public @latest            # the importable API alone
+go-whatchanged --filter=public,main @latest       # and the commands
+go-whatchanged --filter=imports @latest           # dependency changes alone
+go-whatchanged --filter=api,tests @latest         # the API and the tests it came with
+go-whatchanged --filter=all @latest               # everything
+go-whatchanged --filter=public,breaking @latest   # what breaks importers
+```
+
+The output is ordered the same way whatever the filter. Sections come in
+the order public, internal, main, each its packages sorted by import path
+and closed by a summary line. Within a package, the import changes come
+first, then the API changes in apidiff's order, then the test changes;
+imports and tests each list removals before additions, sorted by path or
+name. `--format=markdown` regroups a package's lines under `// Removed`,
+`// Changed` and `// Added`, keeping that order within each group.
+
+```
+$ go-whatchanged --filter=all @latest
 example.com/m/store
+  - import "example.com/legacy"
   + func (c *Client) Ping() error
   - func TestClose
   + func TestPing
-  + func FuzzOpen
 
 1 package changed · 0 incompatible · 1 compatible · would require: MINOR (v1.4.0 → v1.5.0)
 ```
