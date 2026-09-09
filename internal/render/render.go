@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -123,18 +124,117 @@ type Import struct {
 }
 
 // Kind classifies the import change as "added" or "removed".
-func (i Import) Kind() string {
-	if i.Removed {
+func (i Import) Kind() string { return kind(i.Removed) }
+
+// line reduces the import change to a line: the declaration
+// "import \"path\"" removed or added.
+func (i Import) line() line { return describeOne("import "+strconv.Quote(i.Path), i.Removed) }
+
+// Test is a change to the tests of a package: a test function (a Test,
+// Benchmark, Fuzz or Example function of its test files) that appeared,
+// or with Removed set, disappeared. Like an import, a test is not part of
+// the API and never counts towards the summary or the required release;
+// the layouts list it after the package's changes, as a compatible
+// addition or removal of "func TestName". Pos locates the declaration: on
+// the base side for a removal, on the head side otherwise.
+type Test struct {
+	Name    string
+	Removed bool
+	Pos     Position
+}
+
+// Kind classifies the test change as "added" or "removed".
+func (t Test) Kind() string { return kind(t.Removed) }
+
+// line reduces the test change to a line: the declaration "func TestName"
+// removed or added, located when opts wants positions.
+func (t Test) line(opts Options) line {
+	l := describeOne("func "+t.Name, t.Removed)
+	if opts.Positions {
+		l.pos = t.Pos.String()
+	}
+	return l
+}
+
+func kind(removed bool) string {
+	if removed {
 		return "removed"
 	}
 	return "added"
 }
 
+// Directive is a change to a directive of the module's go.mod: the go or
+// toolchain directive, a direct requirement or a replacement. Path names
+// the module for the latter two, and Version the one version of it a
+// replacement names, when it does. Before is the old value and After the
+// new: the version, the toolchain name or the replacement target; one is
+// empty for a directive that appeared or disappeared. Like an import, a
+// directive change is not part of the API and never counts; the layouts
+// list the changes as a block of their own named go.mod above the
+// packages, as compatible removals, additions and edits of lines such as
+// "require example.com/dep v1.2.0". Pos locates the directive: on the
+// base side for a removal, on the head side otherwise.
+type Directive struct {
+	Name    string // "go", "toolchain", "require" or "replace"
+	Path    string
+	Version string
+	Before  string
+	After   string
+	Pos     Position
+}
+
+// Kind classifies the change as "added", "removed" or "changed".
+func (d Directive) Kind() string {
+	switch {
+	case d.Before == "":
+		return "added"
+	case d.After == "":
+		return "removed"
+	}
+	return "changed"
+}
+
+// decl is the go.mod line for the directive with value v.
+func (d Directive) decl(v string) string {
+	s := d.Name
+	if d.Path != "" {
+		s += " " + d.Path
+	}
+	if d.Version != "" {
+		s += " " + d.Version
+	}
+	if d.Name == "replace" {
+		s += " =>"
+	}
+	return s + " " + v
+}
+
+// line reduces the change to a line: the old and new go.mod lines, one of
+// them empty for a removal or an addition, located when opts wants
+// positions.
+func (d Directive) line(opts Options) line {
+	var from, to string
+	if d.Before != "" {
+		from = d.decl(d.Before)
+	}
+	if d.After != "" {
+		to = d.decl(d.After)
+	}
+	l := describeDecl(from, to)
+	if opts.Positions {
+		l.pos = d.Pos.String()
+	}
+	return l
+}
+
 // Package is the diff of one package. An Internal package (one below an
 // internal directory) or a Main package (a command) is shown but kept out
 // of the public API's counts and required release level. Imports are the
-// changes to the packages of other modules it imports; a package with
-// import changes alone is listed but does not count as changed.
+// changes to the packages of other modules it imports and Tests those to
+// its test functions; a package with import or test changes alone is
+// listed but does not count as changed. Mod is set on one entry alone,
+// the go.mod block the layouts synthesize from Result.Mod, which has
+// nothing else.
 type Package struct {
 	Path     string
 	Status   Status
@@ -142,7 +242,17 @@ type Package struct {
 	Main     bool
 	Changes  []Change
 	Imports  []Import
+	Tests    []Test
+	Mod      []Directive
 }
+
+// empty reports whether p has nothing to show, whatever the Options.
+func (p Package) empty() bool {
+	return len(p.Changes) == 0 && len(p.Imports) == 0 && len(p.Tests) == 0 && len(p.Mod) == 0
+}
+
+// modFile is the path the go.mod block is listed under.
+const modFile = "go.mod"
 
 // part returns the part of the module the package belongs to: Main for a
 // command, whatever its directory, Internal for a package below an internal
@@ -175,6 +285,9 @@ type Result struct {
 	BaseVersion, NextVersion string
 
 	Packages []Package // sorted by path; packages without changes may be included and are skipped
+	// Mod is the changes to the module's go.mod, removals first, then
+	// edits, then additions, each in the file's order of directives.
+	Mod      []Directive
 	Warnings []Warning
 }
 
@@ -258,8 +371,9 @@ func (v Visibility) Includes(internal, main bool) bool {
 }
 
 // Kinds is the set of kinds of change that take part in a diff: API
-// changes, import changes or both, combined with |. The zero value selects
-// AllKinds.
+// changes, import changes, go.mod changes and test changes, combined
+// with |. The zero value selects DefaultKinds; AllKinds selects
+// everything.
 type Kinds int
 
 const (
@@ -268,16 +382,23 @@ const (
 	API Kinds = 1 << iota
 	// Imports selects the changes to the imports of other modules.
 	Imports
+	// Mod selects the changes to the directives of go.mod.
+	Mod
+	// Tests selects the changes to the test functions.
+	Tests
 
-	// AllKinds selects both.
-	AllKinds = API | Imports
+	// DefaultKinds selects the API, import and go.mod changes: what a
+	// diff shows unless told otherwise.
+	DefaultKinds = API | Imports | Mod
+	// AllKinds selects every kind, the tests included.
+	AllKinds = DefaultKinds | Tests
 )
 
 // Has reports whether k selects every kind in kinds. The zero value
-// selects everything.
+// selects DefaultKinds.
 func (k Kinds) Has(kinds Kinds) bool {
 	if k == 0 {
-		k = AllKinds
+		k = DefaultKinds
 	}
 	return k&kinds == kinds
 }
@@ -285,11 +406,13 @@ func (k Kinds) Has(kinds Kinds) bool {
 // Options controls rendering.
 type Options struct {
 	Color bool
-	// BreakingOnly hides compatible changes, import changes among them.
+	// BreakingOnly hides compatible changes, import, go.mod and test
+	// changes among them.
 	BreakingOnly bool
 	// Kinds says which kinds of change are shown: the API changes, the
-	// import changes or, the default, both. The summary always counts the
-	// API changes of the full diff.
+	// import changes, the go.mod changes, the test changes or, the
+	// default, all but the tests. The summary always counts the API
+	// changes of the full diff.
 	Kinds  Kinds
 	Format Format
 	// Positions annotates each change with the position of its declaration.
@@ -437,6 +560,9 @@ type line struct {
 	strct      string // the struct the declarations are a field of, or ""
 	pos        string // "" when unknown or not wanted
 	compatible bool
+	// neutral marks a line that is not an API change (an import, a test,
+	// a go.mod directive), whose compatibility is nothing to note.
+	neutral bool
 }
 
 // item is one entry of a package's listing: a change, or the field changes
@@ -512,25 +638,47 @@ func describe(c Change, opts Options) line {
 	return l
 }
 
-// describeImport reduces an import change to a line: the declaration
-// "import \"path\"" on a "-" or a "+" line, compatible either way.
-func describeImport(i Import) line {
-	decl := "import " + strconv.Quote(i.Path)
-	if i.Removed {
-		return line{glyph: "-", kind: "removed", head: decl, from: decl, decls: true, compatible: true}
+// describeDecl reduces a change to a declaration that is not part of the
+// API (an import, a test, a go.mod directive) to a line: from on a "-"
+// line for a removal, to on a "+" line for an addition, or both as a
+// small patch for an edit, compatible in every case.
+func describeDecl(from, to string) line {
+	l := line{from: from, to: to, decls: true, compatible: true, neutral: true}
+	switch {
+	case to == "":
+		l.glyph, l.kind, l.head = "-", "removed", from
+	case from == "":
+		l.glyph, l.kind, l.head = "+", "added", to
+	default:
+		l.glyph, l.kind, l.head = "~", "changed", to
 	}
-	return line{glyph: "+", kind: "added", head: decl, to: decl, decls: true, compatible: true}
+	return l
+}
+
+// describeOne reduces a declaration that is on one side alone, removed or
+// added, to a line; see describeDecl.
+func describeOne(decl string, removed bool) line {
+	if removed {
+		return describeDecl(decl, "")
+	}
+	return describeDecl("", decl)
 }
 
 // lines reduces the changes of p to show to lines, honoring Kinds and
-// BreakingOnly, which hides the import changes along with every other
-// compatible one: the imports first, removed before added, then the
-// changes in order.
+// BreakingOnly, which hides the import, go.mod and test changes along
+// with every other compatible one: the imports first, removed before
+// added, then the changes in order, then the tests, removed before added.
+// The go.mod block has its directives alone, in Result.Mod's order.
 func (p Package) lines(opts Options) []line {
 	var lines []line
+	if opts.Kinds.Has(Mod) && !opts.BreakingOnly {
+		for _, d := range p.Mod {
+			lines = append(lines, d.line(opts))
+		}
+	}
 	if opts.Kinds.Has(Imports) && !opts.BreakingOnly {
 		for _, i := range p.Imports {
-			lines = append(lines, describeImport(i))
+			lines = append(lines, i.line())
 		}
 	}
 	if opts.Kinds.Has(API) {
@@ -539,6 +687,11 @@ func (p Package) lines(opts Options) []line {
 				continue
 			}
 			lines = append(lines, describe(c, opts))
+		}
+	}
+	if opts.Kinds.Has(Tests) && !opts.BreakingOnly {
+		for _, t := range p.Tests {
+			lines = append(lines, t.line(opts))
 		}
 	}
 	return lines
@@ -749,31 +902,48 @@ type section struct {
 // API comes first, reduced to its summary line when nothing changed, then
 // the internal packages and then the main packages (which never are
 // public, wherever they live); when the public API is shown, the other
-// sections appear only when some package in them changed.
+// sections appear only when they have something to show, a package with
+// rows or API changes for their summary line to count. The go.mod block,
+// when it has lines to show, opens the first section.
 func sections(res Result, opts Options) []section {
 	f := opts.Filter
 	var out []section
 	if f.Has(Public) {
-		s := section{part: Public, summary: noChanges(res, f)}
+		s := section{part: Public, packages: shown(res, Public, opts), summary: noChanges(res, f)}
 		if Summarize(res).PackagesChanged > 0 {
 			s.summary = ""
 		}
 		out = append(out, s)
 	}
 	for _, part := range []Visibility{Internal, Main} {
+		if !f.Has(part) {
+			continue
+		}
 		sum := summarize(res, part)
-		if f.Has(part) && (!f.Has(Public) || sum.PackagesChanged > 0) {
-			out = append(out, section{part: part, summary: partSummary(part, sum), secondary: f.Has(Public)})
+		s := section{part: part, packages: shown(res, part, opts), summary: partSummary(part, sum), secondary: f.Has(Public)}
+		if !s.secondary || len(s.packages) > 0 || sum.PackagesChanged > 0 {
+			out = append(out, s)
 		}
 	}
-	for i := range out {
-		for _, p := range res.Packages {
-			if p.part() != out[i].part {
-				continue
-			}
-			if rows, _ := packageRows(p, opts, 0, 0); len(rows) > 0 {
-				out[i].packages = append(out[i].packages, p)
-			}
+	if len(out) > 0 {
+		mod := Package{Path: modFile, Mod: res.Mod}
+		if rows, _ := packageRows(mod, opts, 0, 0); len(rows) > 0 {
+			out[0].packages = slices.Insert(out[0].packages, 0, mod)
+		}
+	}
+	return out
+}
+
+// shown returns the packages of one part that have rows to show under
+// opts, in order.
+func shown(res Result, part Visibility, opts Options) []Package {
+	var out []Package
+	for _, p := range res.Packages {
+		if p.part() != part {
+			continue
+		}
+		if rows, _ := packageRows(p, opts, 0, 0); len(rows) > 0 {
+			out = append(out, p)
 		}
 	}
 	return out
@@ -930,10 +1100,12 @@ func formatSummary(st Style, sum Summary, res Result) string {
 }
 
 // partSummary is the summary line of the internal or the main section:
-// "internal: 2 packages changed · 1 incompatible · 1 compatible".
+// "internal: 2 packages changed · 1 incompatible · 1 compatible", or
+// "internal: no API changes", which import, go.mod and test changes are
+// not.
 func partSummary(part Visibility, sum Summary) string {
 	if sum.PackagesChanged == 0 {
-		return part.String() + ": no changes"
+		return part.String() + ": no API changes"
 	}
 	return fmt.Sprintf("%s: %s · %d incompatible · %d compatible",
 		part, plural(sum.PackagesChanged, "package"), sum.Incompatible, sum.Compatible)
@@ -1122,7 +1294,7 @@ func (l line) goItem() goItem {
 	switch {
 	case l.kind == "added" && !l.compatible:
 		notes = append(notes, "incompatible")
-	case l.kind == "changed" && l.compatible:
+	case l.kind == "changed" && l.compatible && !l.neutral:
 		notes = append(notes, "compatible")
 	}
 	if l.pos != "" {
@@ -1152,14 +1324,25 @@ func (l line) goItem() goItem {
 }
 
 // JSON layout. Field names are part of the tool's interface.
+type jsonDirective struct {
+	Directive string    `json:"directive"`
+	Path      string    `json:"path,omitempty"`
+	Version   string    `json:"version,omitempty"`
+	Kind      string    `json:"kind"`
+	Before    string    `json:"before,omitempty"`
+	After     string    `json:"after,omitempty"`
+	Pos       *Position `json:"pos,omitempty"`
+}
+
 type jsonReport struct {
-	Base        string        `json:"base"`
-	Head        string        `json:"head"`
-	BaseVersion string        `json:"base_version,omitempty"`
-	NextVersion string        `json:"next_version,omitempty"`
-	Packages    []jsonPackage `json:"packages"`
-	Warnings    []Warning     `json:"warnings"`
-	Summary     jsonSummary   `json:"summary"`
+	Base        string          `json:"base"`
+	Head        string          `json:"head"`
+	BaseVersion string          `json:"base_version,omitempty"`
+	NextVersion string          `json:"next_version,omitempty"`
+	Mod         []jsonDirective `json:"mod,omitempty"`
+	Packages    []jsonPackage   `json:"packages"`
+	Warnings    []Warning       `json:"warnings"`
+	Summary     jsonSummary     `json:"summary"`
 }
 
 type jsonPackage struct {
@@ -1169,11 +1352,18 @@ type jsonPackage struct {
 	Main     bool         `json:"main,omitempty"`
 	Changes  []jsonChange `json:"changes"`
 	Imports  []jsonImport `json:"imports,omitempty"`
+	Tests    []jsonTest   `json:"tests,omitempty"`
 }
 
 type jsonImport struct {
 	Path string `json:"path"`
 	Kind string `json:"kind"`
+}
+
+type jsonTest struct {
+	Name string    `json:"name"`
+	Kind string    `json:"kind"`
+	Pos  *Position `json:"pos,omitempty"`
 }
 
 type jsonChange struct {
@@ -1231,7 +1421,7 @@ func writeJSON(w io.Writer, res Result, opts Options) error {
 		rep.Summary.Main = &jsonCounts{PackagesChanged: msum.PackagesChanged, Incompatible: msum.Incompatible, Compatible: msum.Compatible}
 	}
 	for _, p := range res.Packages {
-		if len(p.Changes) == 0 && len(p.Imports) == 0 {
+		if p.empty() {
 			continue
 		}
 		jp := jsonPackage{Path: p.Path, Status: p.Status.String(), Internal: p.Internal, Main: p.Main, Changes: []jsonChange{}}
@@ -1254,16 +1444,23 @@ func writeJSON(w io.Writer, res Result, opts Options) error {
 				After:      l.to,
 				Struct:     l.strct,
 			}
-			if opts.Positions && !c.Pos.IsZero() {
-				pos := c.Pos
-				jc.Pos = &pos
-			}
+			jc.Pos = position(c.Pos, opts)
 			jp.Changes = append(jp.Changes, jc)
 		}
-		if len(jp.Changes) == 0 && len(jp.Imports) == 0 {
+		if opts.Kinds.Has(Tests) && !opts.BreakingOnly {
+			for _, t := range p.Tests {
+				jp.Tests = append(jp.Tests, jsonTest{Name: t.Name, Kind: t.Kind(), Pos: position(t.Pos, opts)})
+			}
+		}
+		if len(jp.Changes) == 0 && len(jp.Imports) == 0 && len(jp.Tests) == 0 {
 			continue
 		}
 		rep.Packages = append(rep.Packages, jp)
+	}
+	if opts.Kinds.Has(Mod) && !opts.BreakingOnly {
+		for _, d := range res.Mod {
+			rep.Mod = append(rep.Mod, jsonDirective{Directive: d.Name, Path: d.Path, Version: d.Version, Kind: d.Kind(), Before: d.Before, After: d.After, Pos: position(d.Pos, opts)})
+		}
 	}
 	rep.Warnings = append(rep.Warnings, res.Warnings...)
 
@@ -1271,6 +1468,15 @@ func writeJSON(w io.Writer, res Result, opts Options) error {
 	enc.SetIndent("", "  ")
 	enc.SetEscapeHTML(false)
 	return enc.Encode(rep)
+}
+
+// position returns the position to report in JSON: pos when positions are
+// wanted and it is known, nil otherwise.
+func position(pos Position, opts Options) *Position {
+	if !opts.Positions || pos.IsZero() {
+		return nil
+	}
+	return &pos
 }
 
 // WriteWarnings prints warnings, one per line, in dim yellow.

@@ -1,4 +1,7 @@
 # stdout
+[1mgo.mod[0m
+  [32m+ require example.com/dep v1.0.0[0m
+
 [1mexample.com/m/deps[0m
   [32m+ import "example.com/dep"[0m
 

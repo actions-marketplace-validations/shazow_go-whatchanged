@@ -1,4 +1,7 @@
 # stdout
+go.mod
+  + require example.com/dep v1.0.0
+
 example.com/m/deps
   + import "example.com/dep"
 

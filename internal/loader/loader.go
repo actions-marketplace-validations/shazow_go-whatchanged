@@ -20,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/shazow/go-whatchanged/internal/modres"
 )
@@ -373,21 +375,9 @@ func (l *Loader) check(importPath string, loc modres.Location) (*types.Package, 
 		return nil, nil, fmt.Errorf("%s: %w", importPath, err)
 	}
 
-	var warnings []string
-	files := make([]*ast.File, 0, len(bp.GoFiles))
-	for _, name := range bp.GoFiles {
-		filename := l.ctxt.JoinPath(loc.Dir, name)
-		src, err := readFile(l.ctxt, filename)
-		if err != nil {
-			return nil, warnings, fmt.Errorf("%s: %w", importPath, err)
-		}
-		f, err := parser.ParseFile(l.fset, filename, src, parser.SkipObjectResolution)
-		if err != nil {
-			warnings = append(warnings, err.Error())
-		}
-		if f != nil {
-			files = append(files, f)
-		}
+	files, warnings, err := l.parse(loc.Dir, bp.GoFiles)
+	if err != nil {
+		return nil, warnings, fmt.Errorf("%s: %w", importPath, err)
 	}
 
 	conf := types.Config{
@@ -407,6 +397,106 @@ func (l *Loader) check(importPath string, loc modres.Location) (*types.Package, 
 	}
 	slices.Sort(warnings)
 	return pkg, slices.Compact(warnings), nil
+}
+
+// parse parses the named files of dir. Syntax errors never abort the
+// parse: go/parser returns what it could make of a file alongside its
+// error, so they are returned as warnings; only an unreadable file is an
+// error.
+func (l *Loader) parse(dir string, names []string) ([]*ast.File, []string, error) {
+	var warnings []string
+	files := make([]*ast.File, 0, len(names))
+	for _, name := range names {
+		filename := l.ctxt.JoinPath(dir, name)
+		src, err := readFile(l.ctxt, filename)
+		if err != nil {
+			return nil, warnings, err
+		}
+		f, err := parser.ParseFile(l.fset, filename, src, parser.SkipObjectResolution)
+		if err != nil {
+			warnings = append(warnings, err.Error())
+		}
+		if f != nil {
+			files = append(files, f)
+		}
+	}
+	return files, warnings, nil
+}
+
+// Test is a test function: a top-level Test, Benchmark, Fuzz or Example
+// function of a package's test files, located by the position of its
+// name.
+type Test struct {
+	Name string
+	Pos  token.Position
+}
+
+// Tests parses the test files of the main-module package at dir, those of
+// the package itself and of its external test package alike, and returns
+// its test functions in source order, the package's own files first. A
+// name declared in both is listed once. bp is the directory as discover
+// imported it, whose TestGoFiles and XTestGoFiles are the test files for
+// the build target. Syntax errors are recorded as warnings under
+// importPath, as the type-check's are.
+func (l *Loader) Tests(importPath, dir string, bp *build.Package) ([]Test, error) {
+	files, warnings, err := l.parse(dir, slices.Concat(bp.TestGoFiles, bp.XTestGoFiles))
+	if len(warnings) > 0 {
+		l.mu.Lock()
+		l.warnings[importPath] = append(l.warnings[importPath], warnings...)
+		l.mu.Unlock()
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", importPath, err)
+	}
+	var tests []Test
+	seen := map[string]bool{}
+	for _, f := range files {
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || !isTest(fn) || seen[fn.Name.Name] {
+				continue
+			}
+			seen[fn.Name.Name] = true
+			tests = append(tests, Test{Name: fn.Name.Name, Pos: l.fset.Position(fn.Name.Pos())})
+		}
+	}
+	return tests, nil
+}
+
+// isTest reports whether fn is a test function, as the go command decides
+// it: a function without a receiver whose name is one of the prefixes
+// followed by nothing or by a character that is not a lower-case letter,
+// so that TestOpen and Test_x are tests and Testify is not. TestMain is
+// the entry point of the test binary rather than a test, unless it takes
+// a *testing.T.
+func isTest(fn *ast.FuncDecl) bool {
+	if fn.Recv != nil {
+		return false
+	}
+	name := fn.Name.Name
+	if name == "TestMain" {
+		return paramType(fn) == "*testing.T"
+	}
+	for _, prefix := range []string{"Test", "Benchmark", "Fuzz", "Example"} {
+		if rest, ok := strings.CutPrefix(name, prefix); ok {
+			if rest == "" {
+				return true
+			}
+			r, _ := utf8.DecodeRuneInString(rest)
+			return !unicode.IsLower(r)
+		}
+	}
+	return false
+}
+
+// paramType is the type of fn's one parameter as written, "*testing.T",
+// or "" when fn has none or several.
+func paramType(fn *ast.FuncDecl) string {
+	params := fn.Type.Params.List
+	if len(params) != 1 || len(params[0].Names) > 1 {
+		return ""
+	}
+	return types.ExprString(params[0].Type)
 }
 
 func readFile(ctxt build.Context, name string) ([]byte, error) {

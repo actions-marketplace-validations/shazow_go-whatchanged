@@ -1,4 +1,11 @@
 # stdout
+### `go.mod`
+
+```go
+// Added
+require example.com/dep v1.0.0 // go.mod:5:1
+```
+
 ### `example.com/m/deps`
 
 ```go

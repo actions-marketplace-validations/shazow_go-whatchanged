@@ -98,24 +98,34 @@ func TestParseArgs(t *testing.T) {
 		kinds    render.Kinds
 		breaking bool
 	}{
-		{nil, render.All, render.AllKinds, false},
-		{[]string{"--filter=public"}, render.Public, render.AllKinds, false},
-		{[]string{"--filter=breaking"}, render.All, render.AllKinds, true},
-		{[]string{"--filter=public,breaking"}, render.Public, render.AllKinds, true},
-		{[]string{"--filter", "internal", "--filter", "breaking"}, render.Internal, render.AllKinds, true},
-		{[]string{"--filter=public,internal"}, render.Public | render.Internal, render.AllKinds, false},
-		{[]string{"--filter=public,internal,main"}, render.All, render.AllKinds, false},
-		{[]string{"--filter=main"}, render.Main, render.AllKinds, false},
-		{[]string{"--filter=public,main,breaking"}, render.Public | render.Main, render.AllKinds, true},
+		{nil, render.All, render.DefaultKinds, false},
+		{[]string{"--filter=public"}, render.Public, render.DefaultKinds, false},
+		{[]string{"--filter=breaking"}, render.All, render.DefaultKinds, true},
+		{[]string{"--filter=public,breaking"}, render.Public, render.DefaultKinds, true},
+		{[]string{"--filter", "internal", "--filter", "breaking"}, render.Internal, render.DefaultKinds, true},
+		{[]string{"--filter=public,internal"}, render.Public | render.Internal, render.DefaultKinds, false},
+		{[]string{"--filter=public,internal,main"}, render.All, render.DefaultKinds, false},
+		{[]string{"--filter=main"}, render.Main, render.DefaultKinds, false},
+		{[]string{"--filter=public,main,breaking"}, render.Public | render.Main, render.DefaultKinds, true},
+		{[]string{"--filter=public", "--filter=default"}, render.All, render.DefaultKinds, false},
 		{[]string{"--filter=public", "--filter=all"}, render.All, render.AllKinds, false},
 		// The kinds of change are a dimension of their own: naming one
 		// leaves the packages alone, and both add up to all of them.
 		{[]string{"--filter=imports"}, render.All, render.Imports, false},
+		{[]string{"--filter=mod"}, render.All, render.Mod, false},
+		{[]string{"--filter=api,mod"}, render.All, render.API | render.Mod, false},
 		{[]string{"--filter=api"}, render.All, render.API, false},
 		{[]string{"--filter=public,imports"}, render.Public, render.Imports, false},
-		{[]string{"--filter=api,imports"}, render.All, render.AllKinds, false},
+		{[]string{"--filter=api,imports,mod"}, render.All, render.DefaultKinds, false},
 		{[]string{"--filter", "api", "--filter", "breaking"}, render.All, render.API, true},
-		{[]string{"--filter=imports", "--filter=all"}, render.All, render.AllKinds, false},
+		{[]string{"--filter=imports", "--filter=default"}, render.All, render.DefaultKinds, false},
+		// Tests are a kind that default leaves out and all includes.
+		{[]string{"--filter=tests"}, render.All, render.Tests, false},
+		{[]string{"--filter=api,tests"}, render.All, render.API | render.Tests, false},
+		{[]string{"--filter=default,tests"}, render.All, render.AllKinds, false},
+		{[]string{"--filter=all"}, render.All, render.AllKinds, false},
+		{[]string{"--filter=public,all"}, render.All, render.AllKinds, false},
+		{[]string{"--filter=public,tests,breaking"}, render.Public, render.Tests, true},
 	} {
 		o, err := parseArgs(tc.args)
 		if err != nil {
