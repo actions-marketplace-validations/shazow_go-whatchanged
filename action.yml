@@ -44,10 +44,11 @@ inputs:
       packages, then the main packages, with the changes to each package's
       imports of other modules above its API changes), or any of public
       (the importable API alone), internal and main for the packages, and
-      api and imports for the kinds of change, comma-separated
-      (public,main; public,api). Internal and main packages and import
-      changes are listed but never count towards the summary, the outputs
-      or fail-on.
+      api, imports and tests for the kinds of change, comma-separated
+      (public,main; public,api; all,tests). Tests, the test functions
+      that came or went, are shown only when named. Internal and main
+      packages and import and test changes are listed but never count
+      towards the summary, the outputs or fail-on.
     required: false
     default: all
   breaking:

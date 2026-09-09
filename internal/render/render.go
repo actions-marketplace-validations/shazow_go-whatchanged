@@ -123,8 +123,32 @@ type Import struct {
 }
 
 // Kind classifies the import change as "added" or "removed".
-func (i Import) Kind() string {
-	if i.Removed {
+func (i Import) Kind() string { return kind(i.Removed) }
+
+// decl is the declaration the layouts show for the import.
+func (i Import) decl() string { return "import " + strconv.Quote(i.Path) }
+
+// Test is a change to the tests of a package: a test function (a Test,
+// Benchmark, Fuzz or Example function of its test files) that appeared,
+// or with Removed set, disappeared. Like an import, a test is not part of
+// the API and never counts towards the summary or the required release;
+// the layouts list it after the package's changes, as a compatible
+// addition or removal of "func TestName". Pos locates the declaration: on
+// the base side for a removal, on the head side otherwise.
+type Test struct {
+	Name    string
+	Removed bool
+	Pos     Position
+}
+
+// Kind classifies the test change as "added" or "removed".
+func (t Test) Kind() string { return kind(t.Removed) }
+
+// decl is the declaration the layouts show for the test.
+func (t Test) decl() string { return "func " + t.Name }
+
+func kind(removed bool) string {
+	if removed {
 		return "removed"
 	}
 	return "added"
@@ -133,8 +157,9 @@ func (i Import) Kind() string {
 // Package is the diff of one package. An Internal package (one below an
 // internal directory) or a Main package (a command) is shown but kept out
 // of the public API's counts and required release level. Imports are the
-// changes to the packages of other modules it imports; a package with
-// import changes alone is listed but does not count as changed.
+// changes to the packages of other modules it imports and Tests those to
+// its test functions; a package with import or test changes alone is
+// listed but does not count as changed.
 type Package struct {
 	Path     string
 	Status   Status
@@ -142,6 +167,12 @@ type Package struct {
 	Main     bool
 	Changes  []Change
 	Imports  []Import
+	Tests    []Test
+}
+
+// empty reports whether p has nothing to show, whatever the Options.
+func (p Package) empty() bool {
+	return len(p.Changes) == 0 && len(p.Imports) == 0 && len(p.Tests) == 0
 }
 
 // part returns the part of the module the package belongs to: Main for a
@@ -258,8 +289,8 @@ func (v Visibility) Includes(internal, main bool) bool {
 }
 
 // Kinds is the set of kinds of change that take part in a diff: API
-// changes, import changes or both, combined with |. The zero value selects
-// AllKinds.
+// changes, import changes and test changes, combined with |. The zero
+// value selects DefaultKinds.
 type Kinds int
 
 const (
@@ -268,16 +299,19 @@ const (
 	API Kinds = 1 << iota
 	// Imports selects the changes to the imports of other modules.
 	Imports
+	// Tests selects the changes to the test functions.
+	Tests
 
-	// AllKinds selects both.
-	AllKinds = API | Imports
+	// DefaultKinds selects the API and import changes: what a diff shows
+	// unless told otherwise. Tests are shown only when asked for.
+	DefaultKinds = API | Imports
 )
 
 // Has reports whether k selects every kind in kinds. The zero value
-// selects everything.
+// selects DefaultKinds.
 func (k Kinds) Has(kinds Kinds) bool {
 	if k == 0 {
-		k = AllKinds
+		k = DefaultKinds
 	}
 	return k&kinds == kinds
 }
@@ -285,11 +319,12 @@ func (k Kinds) Has(kinds Kinds) bool {
 // Options controls rendering.
 type Options struct {
 	Color bool
-	// BreakingOnly hides compatible changes, import changes among them.
+	// BreakingOnly hides compatible changes, import and test changes
+	// among them.
 	BreakingOnly bool
 	// Kinds says which kinds of change are shown: the API changes, the
-	// import changes or, the default, both. The summary always counts the
-	// API changes of the full diff.
+	// import changes, the test changes or, the default, the first two. The
+	// summary always counts the API changes of the full diff.
 	Kinds  Kinds
 	Format Format
 	// Positions annotates each change with the position of its declaration.
@@ -512,25 +547,25 @@ func describe(c Change, opts Options) line {
 	return l
 }
 
-// describeImport reduces an import change to a line: the declaration
-// "import \"path\"" on a "-" or a "+" line, compatible either way.
-func describeImport(i Import) line {
-	decl := "import " + strconv.Quote(i.Path)
-	if i.Removed {
+// describeDecl reduces the addition or removal of a declaration that is
+// not part of the API, an import or a test, to a line: the declaration on
+// a "-" or a "+" line, compatible either way.
+func describeDecl(decl string, removed bool) line {
+	if removed {
 		return line{glyph: "-", kind: "removed", head: decl, from: decl, decls: true, compatible: true}
 	}
 	return line{glyph: "+", kind: "added", head: decl, to: decl, decls: true, compatible: true}
 }
 
 // lines reduces the changes of p to show to lines, honoring Kinds and
-// BreakingOnly, which hides the import changes along with every other
-// compatible one: the imports first, removed before added, then the
-// changes in order.
+// BreakingOnly, which hides the import and test changes along with every
+// other compatible one: the imports first, removed before added, then the
+// changes in order, then the tests, removed before added.
 func (p Package) lines(opts Options) []line {
 	var lines []line
 	if opts.Kinds.Has(Imports) && !opts.BreakingOnly {
 		for _, i := range p.Imports {
-			lines = append(lines, describeImport(i))
+			lines = append(lines, describeDecl(i.decl(), i.Removed))
 		}
 	}
 	if opts.Kinds.Has(API) {
@@ -539,6 +574,15 @@ func (p Package) lines(opts Options) []line {
 				continue
 			}
 			lines = append(lines, describe(c, opts))
+		}
+	}
+	if opts.Kinds.Has(Tests) && !opts.BreakingOnly {
+		for _, t := range p.Tests {
+			l := describeDecl(t.decl(), t.Removed)
+			if opts.Positions {
+				l.pos = t.Pos.String()
+			}
+			lines = append(lines, l)
 		}
 	}
 	return lines
@@ -1169,11 +1213,18 @@ type jsonPackage struct {
 	Main     bool         `json:"main,omitempty"`
 	Changes  []jsonChange `json:"changes"`
 	Imports  []jsonImport `json:"imports,omitempty"`
+	Tests    []jsonTest   `json:"tests,omitempty"`
 }
 
 type jsonImport struct {
 	Path string `json:"path"`
 	Kind string `json:"kind"`
+}
+
+type jsonTest struct {
+	Name string    `json:"name"`
+	Kind string    `json:"kind"`
+	Pos  *Position `json:"pos,omitempty"`
 }
 
 type jsonChange struct {
@@ -1231,7 +1282,7 @@ func writeJSON(w io.Writer, res Result, opts Options) error {
 		rep.Summary.Main = &jsonCounts{PackagesChanged: msum.PackagesChanged, Incompatible: msum.Incompatible, Compatible: msum.Compatible}
 	}
 	for _, p := range res.Packages {
-		if len(p.Changes) == 0 && len(p.Imports) == 0 {
+		if p.empty() {
 			continue
 		}
 		jp := jsonPackage{Path: p.Path, Status: p.Status.String(), Internal: p.Internal, Main: p.Main, Changes: []jsonChange{}}
@@ -1254,13 +1305,15 @@ func writeJSON(w io.Writer, res Result, opts Options) error {
 				After:      l.to,
 				Struct:     l.strct,
 			}
-			if opts.Positions && !c.Pos.IsZero() {
-				pos := c.Pos
-				jc.Pos = &pos
-			}
+			jc.Pos = position(c.Pos, opts)
 			jp.Changes = append(jp.Changes, jc)
 		}
-		if len(jp.Changes) == 0 && len(jp.Imports) == 0 {
+		if opts.Kinds.Has(Tests) && !opts.BreakingOnly {
+			for _, t := range p.Tests {
+				jp.Tests = append(jp.Tests, jsonTest{Name: t.Name, Kind: t.Kind(), Pos: position(t.Pos, opts)})
+			}
+		}
+		if len(jp.Changes) == 0 && len(jp.Imports) == 0 && len(jp.Tests) == 0 {
 			continue
 		}
 		rep.Packages = append(rep.Packages, jp)
@@ -1271,6 +1324,15 @@ func writeJSON(w io.Writer, res Result, opts Options) error {
 	enc.SetIndent("", "  ")
 	enc.SetEscapeHTML(false)
 	return enc.Encode(rep)
+}
+
+// position returns the position to report in JSON: pos when positions are
+// wanted and it is known, nil otherwise.
+func position(pos Position, opts Options) *Position {
+	if !opts.Positions || pos.IsZero() {
+		return nil
+	}
+	return &pos
 }
 
 // WriteWarnings prints warnings, one per line, in dim yellow.

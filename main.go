@@ -56,8 +56,15 @@ towards the summary, the required release or the exit code. --filter=api
 leaves them out and --filter=imports shows nothing else; both combine with
 the parts: --filter=public,imports.
 
+--filter=tests adds the changes to the tests: the Test, Benchmark, Fuzz
+and Example functions of each package's test files that appeared or
+disappeared, listed after its API changes. Like an import change, a test
+change never counts. Tests are not part of --filter=all: they are shown
+only when named, alone or with the other kinds, --filter=api,tests.
+
 --filter=breaking narrows the diff to incompatible changes, which no
-import change is, and combines with any of the above: --filter=public,breaking.
+import or test change is, and combines with any of the above:
+--filter=public,breaking.
 
 GOOS and GOARCH in the environment select the build target, as for the go
 command; the default is the running platform.
@@ -79,7 +86,7 @@ unless there is an error).`
 type options struct {
 	Pkg        patterns `long:"pkg" value-name:"PATTERN" description:"diff only packages matching PATTERN (example: --pkg store/... --pkg util)"`
 	Exclude    patterns `long:"exclude" value-name:"PATTERN" description:"skip packages matching PATTERN (example: --exclude cmd/...,experimental)"`
-	Filter     filter   `long:"filter" value-name:"WHICH" default:"all" description:"what to diff: all, or any of public, internal and main for the packages, and api and imports for the kinds of change; add breaking to show only incompatible changes; comma-separated or repeatable (example: --filter public,breaking)"`
+	Filter     filter   `long:"filter" value-name:"WHICH" default:"all" description:"what to diff: all, or any of public, internal and main for the packages, and api, imports and tests for the kinds of change (tests only when named); add breaking to show only incompatible changes; comma-separated or repeatable (example: --filter public,breaking)"`
 	Pos        bool     `long:"pos" description:"annotate each change with its source position"`
 	Format     string   `long:"format" choice:"text" choice:"markdown" choice:"md" choice:"json" default:"text" description:"output type"`
 	Color      string   `long:"color" choice:"auto" choice:"always" choice:"never" default:"auto" description:"colorize output (auto honors NO_COLOR)"`
@@ -201,10 +208,11 @@ func (o *options) whatchanged() (whatchanged.Options, error) {
 
 // filter collects the terms of a repeatable, comma-separated --filter flag:
 // "public", "internal" and "main" say which packages take part (all three
-// add up to "all", the default when none is named), "api" and "imports"
-// which kinds of change (likewise), and "breaking" narrows the diff to
-// incompatible changes. It is a slice so that go-flags drops the default
-// when the flag is given.
+// add up to "all", the default when none is named), "api", "imports" and
+// "tests" which kinds of change (the first two add up to "all", the
+// default; "tests" only counts when named), and "breaking" narrows the
+// diff to incompatible changes. It is a slice so that go-flags drops the
+// default when the flag is given.
 type filter []string
 
 // UnmarshalFlag adds the terms of one flag occurrence, implementing
@@ -215,10 +223,10 @@ func (f *filter) UnmarshalFlag(s string) error {
 		switch term {
 		case "":
 			continue
-		case "all", "public", "internal", "main", "api", "imports", "breaking":
+		case "all", "public", "internal", "main", "api", "imports", "tests", "breaking":
 			*f = append(*f, term)
 		default:
-			return fmt.Errorf("invalid filter %q (want all, public, internal, main, api, imports or breaking)", term)
+			return fmt.Errorf("invalid filter %q (want all, public, internal, main, api, imports, tests or breaking)", term)
 		}
 	}
 	return nil
@@ -249,22 +257,25 @@ func (f filter) visibility() render.Visibility {
 	return v
 }
 
-// kinds returns the kinds of change the terms select: the kinds named, or
-// both when "all" or no kind at all was named.
+// kinds returns the kinds of change the terms select: the kinds named,
+// with "all" standing for the default kinds, which are also what no kind
+// at all selects. Tests are never among the defaults.
 func (f filter) kinds() render.Kinds {
 	var k render.Kinds
 	for _, term := range f {
 		switch term {
 		case "all":
-			return render.AllKinds
+			k |= render.DefaultKinds
 		case "api":
 			k |= render.API
 		case "imports":
 			k |= render.Imports
+		case "tests":
+			k |= render.Tests
 		}
 	}
 	if k == 0 {
-		return render.AllKinds
+		return render.DefaultKinds
 	}
 	return k
 }

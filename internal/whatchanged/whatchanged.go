@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/build"
 	"go/token"
 	"go/types"
 	"go/version"
@@ -66,13 +67,15 @@ type Options struct {
 	// Positions annotates each change with the position of its declaration.
 	Positions bool
 	// Kinds selects which kinds of change are shown: the API changes,
-	// the import changes or, the zero value, both. An import change is a
-	// package of another module that a package started or stopped
-	// importing, listed before the package's API changes; the standard
-	// library and the module's own packages are not tracked. Import
-	// changes are not API changes: they never count towards the summary,
-	// the required release or the exit code, and a package with import
-	// changes alone is listed without counting as changed.
+	// the import changes, the test changes or, the zero value, the first
+	// two. An import change is a package of another module that a package
+	// started or stopped importing, listed before the package's API
+	// changes; the standard library and the module's own packages are not
+	// tracked. A test change is a test function of the package's test
+	// files that appeared or disappeared, listed after its API changes.
+	// Neither is an API change: they never count towards the summary, the
+	// required release or the exit code, and a package with import or
+	// test changes alone is listed without counting as changed.
 	Kinds render.Kinds
 	// Width is the number of columns the text layout may use, 0 for no
 	// limit; see render.Options.Width.
@@ -328,10 +331,11 @@ type side struct {
 	res       *modres.Resolver
 	ld        *loader.Loader
 	pkgs      map[string]*types.Package
-	internal  map[string]bool     // import paths of internal packages
-	main      map[string]bool     // import paths of main packages
-	imports   map[string][]string // the packages of other modules each package imports
-	all       []string            // every import path Options.Filter selects, before Options.Packages and Exclude
+	internal  map[string]bool          // import paths of internal packages
+	main      map[string]bool          // import paths of main packages
+	imports   map[string][]string      // the packages of other modules each package imports
+	tests     map[string][]render.Test // the test functions of each package, none marked Removed
+	all       []string                 // every import path Options.Filter selects, before Options.Packages and Exclude
 	problem   map[string]string
 	notes     []string // module-level warnings, reported under the module path
 }
@@ -625,6 +629,9 @@ func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, 
 	if opts.Kinds.Has(render.Imports) {
 		s.imports = make(map[string][]string)
 	}
+	if opts.Kinds.Has(render.Tests) {
+		s.tests = make(map[string][]render.Test)
+	}
 	filter := discover.NewFilter(opts.Packages, opts.Exclude)
 	paths := make([]string, 0, len(found))
 	for p := range found {
@@ -648,6 +655,11 @@ func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, 
 		s.main[p] = found[p].Main
 		if s.imports != nil {
 			s.imports[p] = s.dependencies(found[p].Dir, found[p].Build.Imports)
+		}
+		if s.tests != nil {
+			if s.tests[p], err = s.testFuncs(p, found[p].Dir, found[p].Build, fset); err != nil {
+				return nil, fmt.Errorf("%s: %w", s.name, err)
+			}
 		}
 	}
 	if err := s.ld.Err(); err != nil {
@@ -717,6 +729,7 @@ func diffSides(base, head *side, fset *token.FileSet) *render.Result {
 			pkg.Changes = append(pkg.Changes, rc)
 		}
 		pkg.Imports = diffImports(base.imports[p], head.imports[p])
+		pkg.Tests = diffTests(base.tests[p], head.tests[p])
 		// apidiff only sees symbols, so a package with no exported API
 		// that appears or disappears would go unreported. Importers still
 		// notice: the import breaks, or its init side effects are gone.
@@ -754,22 +767,64 @@ func (s *side) dependencies(dir string, imports []string) []string {
 	return deps
 }
 
+// testFuncs lists the test functions of the package in dir, located as
+// the renderer shows positions.
+func (s *side) testFuncs(importPath, dir string, bp *build.Package, fset *token.FileSet) ([]render.Test, error) {
+	found, err := s.ld.Tests(importPath, dir, bp)
+	if err != nil {
+		return nil, err
+	}
+	tests := make([]render.Test, len(found))
+	for i, t := range found {
+		tests[i] = render.Test{Name: t.Name, Pos: s.position(fset.Position(t.Pos))}
+	}
+	return tests, nil
+}
+
 // diffImports lists the import paths in old but not in nw as removed and
 // those in nw but not in old as added, removals first, each sorted by
 // path. The imports of a package on one side only are all removed or all
 // added.
 func diffImports(old, nw []string) []render.Import {
 	var out []render.Import
-	for _, p := range slices.Sorted(slices.Values(old)) {
-		if !slices.Contains(nw, p) {
-			out = append(out, render.Import{Path: p, Removed: true})
+	for _, p := range missing(old, nw, identity) {
+		out = append(out, render.Import{Path: p, Removed: true})
+	}
+	for _, p := range missing(nw, old, identity) {
+		out = append(out, render.Import{Path: p})
+	}
+	return out
+}
+
+// diffTests lists the tests in old but not in nw as removed and those in
+// nw but not in old as added, removals first, each sorted by name, like
+// diffImports.
+func diffTests(old, nw []render.Test) []render.Test {
+	name := func(t render.Test) string { return t.Name }
+	var out []render.Test
+	for _, t := range missing(old, nw, name) {
+		t.Removed = true
+		out = append(out, t)
+	}
+	return append(out, missing(nw, old, name)...)
+}
+
+func identity(s string) string { return s }
+
+// missing returns the elements of from whose key none of in has, sorted
+// by key.
+func missing[T any](from, in []T, key func(T) string) []T {
+	have := map[string]bool{}
+	for _, x := range in {
+		have[key(x)] = true
+	}
+	var out []T
+	for _, x := range from {
+		if !have[key(x)] {
+			out = append(out, x)
 		}
 	}
-	for _, p := range slices.Sorted(slices.Values(nw)) {
-		if !slices.Contains(old, p) {
-			out = append(out, render.Import{Path: p})
-		}
-	}
+	slices.SortFunc(out, func(a, b T) int { return strings.Compare(key(a), key(b)) })
 	return out
 }
 

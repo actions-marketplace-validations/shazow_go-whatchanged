@@ -56,6 +56,7 @@ go install github.com/shazow/go-whatchanged@latest
 | Which of these changes break importers? | `go-whatchanged --filter=breaking @latest` |
 | What changed in the commands, the `main` packages? | `go-whatchanged --filter=main @latest` |
 | Which packages picked up or dropped a dependency? | `go-whatchanged --filter=imports @latest` |
+| Which tests came or went? | `go-whatchanged --filter=tests @latest` |
 | Would this pass a compatibility gate? | `go-whatchanged --exit-fail=major @latest` |
 
 ```
@@ -74,9 +75,9 @@ Options:
   --pkg=PATTERN      diff only packages matching PATTERN (repeatable)
   --exclude=PATTERN  skip packages matching PATTERN (repeatable)
   --filter=WHICH     all, or any of public | internal | main: which
-                     packages take part; api | imports: which kinds of
-                     change; breaking: only incompatible changes
-                     (default all)
+                     packages take part; api | imports | tests: which
+                     kinds of change (tests only when named); breaking:
+                     only incompatible changes (default all)
   --pos              annotate changes with source positions
   --format=LAYOUT    text | markdown (or md) | json (default text)
   --color=WHEN       auto | always | never (default auto; honors NO_COLOR)
@@ -196,10 +197,10 @@ them in a section of theirs; neither counts towards the public API's
 totals or the exit code. `--filter` picks the sections: `--filter=public`
 for the importable API alone, `--filter=main` for the commands alone,
 `--filter=public,main` for both. It also picks the kinds of change,
-`--filter=api` or `--filter=imports` (see [Import
-changes](#import-changes)), and `--filter=breaking` narrows the diff to
-incompatible changes; with either, the counts in the summary still
-describe the full diff.
+`--filter=api`, `--filter=imports` (see [Import changes](#import-changes))
+or `--filter=tests` (see [Test changes](#test-changes)), and
+`--filter=breaking` narrows the diff to incompatible changes; with either,
+the counts in the summary still describe the full diff.
 
 ## Reading the output
 
@@ -252,6 +253,32 @@ The imports are those of the package's non-test files for the build
 target, as the `go` command sees them; `import "C"` is never among them,
 since cgo is disabled.
 
+### Test changes
+
+`--filter=tests` lists, after each package's changes, the test functions
+that appeared or disappeared, as `func TestName` lines on `+` and `-`
+rows: a review sees the tests a change brought along with the API it
+touched. A test function is a `Test`, `Benchmark`, `Fuzz` or `Example`
+function of the package's test files for the build target, its own and
+its external `_test` package's alike, named as the `go` command names them
+(`TestOpen` and `Test_open` are tests, `Testify` is not); the tests are
+read from their declarations alone, so subtests are not seen. Tests are
+never part of the default: they are shown only when named, alone or with
+the other kinds, `--filter=api,tests`. Like an import change, a test
+change never counts towards the summary, the required release or the exit
+code, and `--filter=breaking` hides it.
+
+```
+$ go-whatchanged --filter=api,tests @latest
+example.com/m/store
+  + func (c *Client) Ping() error
+  - func TestClose
+  + func TestPing
+  + func FuzzOpen
+
+1 package changed · 0 incompatible · 1 compatible · would require: MINOR (v1.4.0 → v1.5.0)
+```
+
 ## Output formats
 
 `--format=markdown` renders each package as a heading and a `go` block,
@@ -297,8 +324,10 @@ are part of the tool's interface. `base_version` and `next_version` are
 present when the base is a release tag, `pos` with `--pos`, and `struct`
 on a struct field's change, whose `before` and `after` are the field's
 declaration inside it. A package with import changes carries them in
-`imports`, each a `path` and a `kind` of `added` or `removed`; a package
-with import changes alone has an empty `changes`.
+`imports`, each a `path` and a `kind` of `added` or `removed`, and with
+`--filter=tests` its test changes in `tests`, each a `name`, a `kind` and,
+with `--pos`, a `pos`; a package with import or test changes alone has an
+empty `changes`.
 
 ```json
 {

@@ -219,7 +219,7 @@ jobs:
 | `head` | `@HEAD` | The new side, `@rev`. Empty means the working tree. |
 | `working-directory` | `.` | The module to diff, for repositories with several. |
 | `pkg`, `exclude` | | Package patterns, comma- or newline-separated. |
-| `filter` | `all` | `all`, or any of `public`, `internal` and `main` for the packages and `api` and `imports` for the kinds of change: `public,main`, `public,api`. |
+| `filter` | `all` | `all`, or any of `public`, `internal` and `main` for the packages and `api`, `imports` and `tests` for the kinds of change (`tests` only when named): `public,main`, `public,api`, `all,tests`. |
 | `breaking` | `false` | Show only incompatible changes. |
 | `pos` | `false` | Annotate changes with source positions. |
 | `strict` | `false` | Treat type-check errors as fatal. |
