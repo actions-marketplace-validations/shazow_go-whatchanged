@@ -55,7 +55,7 @@ go install github.com/shazow/go-whatchanged@latest
 | What has changed since the last release in another checkout? | `go-whatchanged ~/src/m@latest` |
 | Which of these changes break importers? | `go-whatchanged --filter=breaking @latest` |
 | What changed in the commands, the `main` packages? | `go-whatchanged --filter=main @latest` |
-| Which packages picked up or dropped a dependency? | `go-whatchanged --filter=imports @latest` |
+| Which packages picked up or dropped an import? | `go-whatchanged --filter=imports @latest` |
 | What changed in go.mod? | `go-whatchanged --filter=mod @latest` |
 | Which tests came or went? | `go-whatchanged --filter=tests @latest` |
 | Would this pass a compatibility gate? | `go-whatchanged --exit-fail=major @latest` |
@@ -201,16 +201,18 @@ change; see [Filters](#filters).
 
 ### Import changes
 
-Above each package's changes, the diff lists the packages of other modules
-it started or stopped importing, as `import "path"` lines on `+` and `-`
-rows: a new dependency is as visible as a new function. The standard
-library and the module's own packages are not tracked, so a package that
-swaps `sort` for `slices` is not listed for it; a nested module counts as
-another module. A package that appears brings all of its dependencies, one
-that disappears loses them. Import changes are not API changes: they never
-count towards the summary, the required release or the exit code, and a
-package whose imports alone changed is listed without counting as changed.
-They are compatible, so `--filter=breaking` hides them.
+Above each package's changes, the diff lists the packages from outside the
+module it started or stopped importing, as `import "path"` lines on `+`
+and `-` rows: a new dependency is as visible as a new function. The
+standard library is tracked along with other modules' packages, so a
+package that swaps `sort` for `slices` is listed for both; a nested module
+counts as another module. Only the module's own packages are left out,
+since each of them is already in the diff in its own right. A package that
+appears brings all of its imports, one that disappears loses them. Import
+changes are not API changes: they never count towards the summary, the
+required release or the exit code, and a package whose imports alone
+changed is listed without counting as changed. They are compatible, so
+`--filter=breaking` hides them.
 
 With `--filter=imports`, here is what an upgrade of testify did, where
 `assert` moved its YAML dependency behind a package of its own:
@@ -244,7 +246,7 @@ exit code always describe the public API changes of the full diff.
 | `internal` | packages below an `internal` directory |
 | `main` | `main` packages, wherever they live |
 | `api` | changes to the exported API, as apidiff reports them |
-| `imports` | packages of other modules a package started or stopped importing |
+| `imports` | packages outside the module, the standard library included, a package started or stopped importing |
 | `mod` | go.mod directives that appeared, disappeared or changed |
 | `tests` | test functions that appeared or disappeared |
 | `default` | every package, `api`, `imports` and `mod`: the default |
@@ -264,7 +266,7 @@ API changes: they do not count, and `breaking` hides them.
 ```
 go-whatchanged --filter=public @latest            # the importable API alone
 go-whatchanged --filter=public,main @latest       # and the commands
-go-whatchanged --filter=imports @latest           # dependency changes alone
+go-whatchanged --filter=imports @latest           # import changes alone
 go-whatchanged --filter=mod @latest               # go.mod changes alone
 go-whatchanged --filter=api,tests @latest         # the API and the tests it came with
 go-whatchanged --filter=all @latest               # everything

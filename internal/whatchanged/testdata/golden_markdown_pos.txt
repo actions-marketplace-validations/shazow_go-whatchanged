@@ -9,6 +9,9 @@ require example.com/dep v1.0.0 // go.mod:5:1
 ### `example.com/m/deps`
 
 ```go
+// Removed
+import "fmt"
+
 // Added
 import "example.com/dep"
 ```
@@ -63,6 +66,7 @@ type Stringer interface{ String() string } // ->
 type Stringer = fmt.Stringer               // util/util.go:10:6
 
 // Added
+import "fmt"
 func (Sizer) Size() int                    // incompatible · util/util.go:7:2
 ```
 

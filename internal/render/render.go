@@ -230,11 +230,11 @@ func (d Directive) line(opts Options) line {
 // Package is the diff of one package. An Internal package (one below an
 // internal directory) or a Main package (a command) is shown but kept out
 // of the public API's counts and required release level. Imports are the
-// changes to the packages of other modules it imports and Tests those to
-// its test functions; a package with import or test changes alone is
-// listed but does not count as changed. Mod is set on one entry alone,
-// the go.mod block the layouts synthesize from Result.Mod, which has
-// nothing else.
+// changes to the packages it imports from outside the module and Tests
+// those to its test functions; a package with import or test changes
+// alone is listed but does not count as changed. Mod is set on one entry
+// alone, the go.mod block the layouts synthesize from Result.Mod, which
+// has nothing else.
 type Package struct {
 	Path     string
 	Status   Status
@@ -380,7 +380,7 @@ const (
 	// API selects the changes to the exported API: the symbols apidiff
 	// reports on, and packages added or removed.
 	API Kinds = 1 << iota
-	// Imports selects the changes to the imports of other modules.
+	// Imports selects the changes to the imports from outside the module.
 	Imports
 	// Mod selects the changes to the directives of go.mod.
 	Mod

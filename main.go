@@ -50,12 +50,13 @@ towards the summary, the required release or the exit code.
 --filter=public, --filter=internal and --filter=main pick the parts to
 show, and add up: --filter=public,main.
 
-Above each package's changes, the diff lists the packages of other modules
-it started or stopped importing, so that a new dependency is as visible as
-a new function. Import changes are not API changes: they never count
-towards the summary, the required release or the exit code. --filter=api
-leaves them out and --filter=imports shows nothing else; both combine with
-the parts: --filter=public,imports.
+Above each package's changes, the diff lists the packages from outside
+the module it started or stopped importing, the standard library
+included, so that a new dependency is as visible as a new function; only
+the module's own packages are left out. Import changes are not API
+changes: they never count towards the summary, the required release or
+the exit code. --filter=api leaves them out and --filter=imports shows
+nothing else; both combine with the parts: --filter=public,imports.
 
 Above the packages, the diff lists the changes to go.mod as a block of
 its own: the go and toolchain directives, the direct requirements and

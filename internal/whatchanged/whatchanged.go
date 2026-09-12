@@ -70,14 +70,14 @@ type Options struct {
 	Positions bool
 	// Kinds selects which kinds of change are shown: the API changes,
 	// the import changes, the go.mod changes, the test changes or, the
-	// zero value, all but the tests. An import change is a package of
-	// another module that a package started or stopped importing, listed
-	// before the package's API changes; the standard library and the
-	// module's own packages are not tracked. A go.mod change is a
-	// directive of the module's go.mod that appeared, disappeared or
-	// changed, the go and toolchain directives, the direct requirements
-	// and the replacements, listed as a block of their own above the
-	// packages. A test change is a test function of the package's test
+	// zero value, all but the tests. An import change is a package from
+	// outside this module that a package started or stopped importing,
+	// the standard library included, listed before the package's API
+	// changes; only the module's own packages are not tracked. A go.mod
+	// change is a directive of the module's go.mod that appeared,
+	// disappeared or changed, the go and toolchain directives, the direct
+	// requirements and the replacements, listed as a block of their own
+	// above the packages. A test change is a test function of the package's test
 	// files that appeared or disappeared, listed after its API changes.
 	// None is an API change: they never count towards the summary, the
 	// required release or the exit code, and a package with import or
@@ -339,7 +339,7 @@ type side struct {
 	pkgs      map[string]*types.Package
 	internal  map[string]bool          // import paths of internal packages
 	main      map[string]bool          // import paths of main packages
-	imports   map[string][]string      // the packages of other modules each package imports
+	imports   map[string][]string      // the packages each package imports from outside the module
 	tests     map[string][]render.Test // the test functions of each package, none marked Removed
 	mod       []directive              // the directives of go.mod, in canonical order
 	all       []string                 // every import path Options.Filter selects, before Options.Packages and Exclude
@@ -669,7 +669,7 @@ func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, 
 		s.internal[p] = found[p].Internal
 		s.main[p] = found[p].Main
 		if s.imports != nil {
-			s.imports[p] = s.dependencies(found[p].Dir, bp.Imports)
+			s.imports[p] = s.trackedImports(found[p].Dir, bp.Imports)
 		}
 		if s.tests != nil {
 			tests, err := s.testFuncs(p, found[p].Dir, bp)
@@ -868,23 +868,25 @@ func (d directive) render(before, after string) render.Directive {
 	return render.Directive{Name: d.name, Path: d.path, Version: d.version, Before: before, After: after, Pos: d.pos}
 }
 
-// dependencies returns the imports of a package in dir that other modules
-// provide: neither the standard library nor this module, as the resolver
-// tells them apart, so that a nested module is a dependency and a replaced
-// module without a dot in its path is not the standard library. An import
-// that resolves nowhere is kept, since it is not the standard library or
-// this module either; the loader warns about it separately. The imports
-// are those go/build lists: the ones of the package's non-test files for
-// the build target, "C" excluded since cgo is disabled.
-func (s *side) dependencies(dir string, imports []string) []string {
-	var deps []string
+// trackedImports returns the imports of a package in dir that something
+// other than this module provides: the standard library and the packages
+// of other modules alike, as the resolver tells them apart, so that a
+// nested module is another module's and a replaced module without a dot
+// in its path is not the standard library. Only this module's own packages
+// are left out, since each of them is already in the diff in its own
+// right. An import that resolves nowhere is kept, since it is not this
+// module's either; the loader warns about it separately. The
+// imports are those go/build lists: the ones of the package's non-test
+// files for the build target, "C" excluded since cgo is disabled.
+func (s *side) trackedImports(dir string, imports []string) []string {
+	var tracked []string
 	for _, p := range imports {
-		if loc, err := s.res.Resolve(p, dir); err == nil && loc.Kind != modres.Dep {
+		if loc, err := s.res.Resolve(p, dir); err == nil && loc.Kind == modres.Main {
 			continue
 		}
-		deps = append(deps, p)
+		tracked = append(tracked, p)
 	}
-	return deps
+	return tracked
 }
 
 // testFuncs lists the test functions of the package in dir, located as

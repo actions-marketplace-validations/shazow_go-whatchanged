@@ -19,6 +19,10 @@
       "changes": [],
       "imports": [
         {
+          "path": "fmt",
+          "kind": "removed"
+        },
+        {
           "path": "example.com/dep",
           "kind": "added"
         }
@@ -149,6 +153,12 @@
           "message": "Stringer: changed from Stringer to fmt.Stringer",
           "before": "type Stringer interface{ String() string }",
           "after": "type Stringer = fmt.Stringer"
+        }
+      ],
+      "imports": [
+        {
+          "path": "fmt",
+          "kind": "added"
         }
       ]
     }
