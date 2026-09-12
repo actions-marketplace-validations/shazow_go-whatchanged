@@ -462,27 +462,24 @@ from `git worktree add`: nothing in the repository is changed.
 
 ## How it works
 
-For the curious, and for anyone debugging an import that resolves
-unexpectedly: each side gets its own `go/build` context whose filesystem
+Each side gets its own `go/build` context whose filesystem
 hooks are served either from the git tree, mounted at a synthetic path, or
 from the working directory; everything outside the module falls through
 to the real filesystem, so `$GOROOT` and the module cache stay reachable.
-Import paths are resolved from `go.mod` alone, which is sound for modules
-at `go 1.17` or newer because graph pruning guarantees that every module
-providing an imported package is listed. The two sides load concurrently,
+Import paths are resolved from `go.mod`. The two sides load concurrently,
 and dependency packages are type-checked once and shared between them when
-their imports resolve identically on both; otherwise, as when a dependency
-imports the main module, they are checked once per side, so that neither
-side is ever linked against the other side's packages.
+their imports resolve identically.
 
-A module the cache lacks is fetched through one small interface,
-`internal/modfetch.Source`: resolve a query to a version, fetch a version
+If a module is missing a cache, it's fetched through `internal/modfetch.Source`: 
+resolve a query to a version, fetch a version
 to a readable tree, or several at once. Before a side is type-checked,
-every requirement of its `go.mod` that the cache lacks is fetched as one
-batch, in parallel, and anything that still turns out to be missing is
-fetched on demand. The interface's only implementation runs the go
+any requirement of its `go.mod` that's not cached is fetched in parallel.
+The interface's only implementation runs the `go`
 command; a client for the module proxy protocol could replace it without
-the rest of the tool noticing, and `--fsreadonly` simply leaves it out.
+the rest of the tool noticing.
+
+Using the `--fsreadonly` omits the implementation for `modfetch.Source`
+to ensure there are no filesystem interactions.
 
 ## Limitations
 
