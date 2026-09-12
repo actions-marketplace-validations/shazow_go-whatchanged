@@ -45,12 +45,12 @@ changes call for: "would require: MINOR (v1.4.0 → v1.5.0)".
 
 A module side whose location is not the module path its go.mod declares is
 retried once under that path, and the retry is noted on the standard
-error: github.com/charmbracelet/lipgloss@v2.0.0 is diffed as
-charm.land/lipgloss/v2@v2.0.0, and github.com/x/m@v2.0.0 as
-github.com/x/m/v2@v2.0.0. A head that named no module of its own follows
-the base, so both sides stay on one module line.
---resolve-module-path=never refuses the mismatch instead, as the go
-command does. Only the sides are redirected: a dependency is always
+error: a vanity URL, github.com/charmbracelet/lipgloss@v2.0.0 diffed as
+charm.land/lipgloss/v2@v2.0.0, and a major version suffix the location
+lacks, github.com/x/m@v2.0.0 as github.com/x/m/v2@v2.0.0. A head that
+named no module of its own follows the base, so both sides stay on one
+module line. --resolve-module=never refuses the mismatch instead, as the
+go command does. Only the sides are redirected: a dependency is always
 fetched under the path its importers spell.
 
 --pkg and --exclude take import paths or module-relative paths, with "..."
@@ -113,7 +113,7 @@ type options struct {
 	Format     string   `long:"format" choice:"text" choice:"markdown" choice:"md" choice:"json" default:"text" description:"output type"`
 	Color      string   `long:"color" choice:"auto" choice:"always" choice:"never" default:"auto" description:"colorize output (auto honors NO_COLOR)"`
 	Strict     bool     `long:"strict" description:"treat type-check errors as fatal"`
-	ModulePath string   `long:"resolve-module-path" choice:"auto" choice:"never" default:"auto" description:"follow the module path a module side's go.mod declares when the location given is not that path: a vanity path, or a major version suffix the location lacks; never refuses the mismatch, as the go command does"`
+	ResolveMod string   `long:"resolve-module" choice:"auto" choice:"never" default:"auto" description:"follow the module path a module side's go.mod declares when the location given is not that path: a vanity URL (github.com/charmbracelet/lipgloss@v2.0.0 is the module charm.land/lipgloss/v2), or a major version suffix the location lacks; never refuses the mismatch, as the go command does"`
 	FSReadOnly bool     `long:"fsreadonly" description:"never write to the filesystem or run the go command: a module missing from the module cache is an error instead of a download"`
 	ExitFail   string   `long:"exit-fail" choice:"major" choice:"minor" choice:"patch" description:"exit 100/101/102 when the required bump is major, minor or patch, or higher"`
 	Version    bool     `long:"version" description:"print the version of go-whatchanged and exit"`
@@ -204,7 +204,7 @@ func (o *options) whatchanged() (whatchanged.Options, error) {
 		Base:      o.Args.Base,
 		Head:      o.Args.Head,
 
-		ExactModulePath: o.ModulePath == "never",
+		ExactModulePath: o.ResolveMod == "never",
 	}
 	if !o.FSReadOnly {
 		opts.Fetch = &modfetch.GoCommand{Stderr: os.Stderr}

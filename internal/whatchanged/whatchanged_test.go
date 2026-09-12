@@ -1049,7 +1049,7 @@ func TestModulePathRedirect(t *testing.T) {
 		t.Errorf("stderr noted the redirect %d times:\n%s", n, r.stderr)
 	}
 
-	// --resolve-module-path=never refuses the mismatch, as the go command
+	// --resolve-module=never refuses the mismatch, as the go command
 	// does, and reports what the go command said about it.
 	r = f.runSpecs(base, head, Options{Fetch: src, ExactModulePath: true})
 	if r.code != ExitError || r.err == nil {

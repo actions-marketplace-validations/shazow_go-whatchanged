@@ -53,7 +53,6 @@ go install github.com/shazow/go-whatchanged@latest
 | What does this branch change, compared to `main`? | `go-whatchanged @origin/main` |
 | What is unreleased on `main` of a module I don't have checked out? | `go-whatchanged github.com/stretchr/testify@latest` |
 | What did a published release change? | `go-whatchanged github.com/stretchr/testify@v1.9.0 @v1.10.0` |
-| What did its last release change? | `go-whatchanged github.com/stretchr/testify@previous` |
 | What has changed since the last release in another checkout? | `go-whatchanged ~/src/m@latest` |
 | Which of these changes break importers? | `go-whatchanged --filter=breaking @latest` |
 | What changed in the commands, the `main` packages? | `go-whatchanged --filter=main @latest` |
@@ -87,10 +86,13 @@ Options:
   --format=LAYOUT    text | markdown (or md) | json (default text)
   --color=WHEN       auto | always | never (default auto; honors NO_COLOR)
   --strict           type-check errors are fatal (default: warn)
-  --resolve-module-path=WHEN
-                     auto | never: follow the module path a module side's
-                     go.mod declares when the location given is not that
-                     path (default auto)
+  --resolve-module=WHEN
+                     auto | never: when a module side's location is not the
+                     module path its go.mod declares, follow the declared
+                     path or refuse as the go command does; covers a vanity
+                     URL (github.com/charmbracelet/lipgloss@v2.0.0 is the
+                     module charm.land/lipgloss/v2) and a major version
+                     suffix the location lacks (default auto)
   --fsreadonly       never write to the filesystem or run the go command
   --exit-fail=LEVEL  exit 100/101/102 when the required bump is major, minor
                      or patch, or higher
@@ -127,27 +129,6 @@ that tag; name it instead: `go-whatchanged @v1.4.0`.
 At `v0` an incompatible change suggests the next minor, and a pre-release
 always suggests its final release.
 
-### The last two releases
-
-`@previous` is the release before the newest one, and with no head of its
-own it pairs with `@latest`, so `go-whatchanged @previous` is what the
-last release shipped without naming either tag:
-
-```
-$ go-whatchanged @previous
-example.com/m/util
-  + func Pad(s string, n int) string
-
-1 package changed · 0 incompatible · 1 compatible · would require: MINOR (v1.3.0 → v1.4.0)
-```
-
-Unlike `@latest`, a tag on the head commit counts, so a fresh release is
-the newest one the moment it is tagged. It works for a published module
-too, where it is the version below `@latest`: `go-whatchanged
-github.com/stretchr/testify@previous`. A head of its own overrides the
-pairing, so `go-whatchanged @previous @main` is the last release plus
-whatever is unreleased on `main`.
-
 ### Naming the sides
 
 Each side is `location@version`, the way the go command names versions.
@@ -167,37 +148,6 @@ versions come through the proxy the go command is configured for, and a
 branch or `@HEAD` may lag the repository by the proxy's cache. A version
 whose go.mod declares go 1.16 or older cannot be diffed; see
 [Limitations](#limitations).
-
-#### When the location is not the module path
-
-A module's path is whatever its go.mod declares, which need not be the
-repository it is served from: `github.com/charmbracelet/lipgloss@v2.0.0`
-is the module `charm.land/lipgloss/v2`, and `github.com/x/m@v2.0.0` is
-`github.com/x/m/v2`. The `go` command refuses the mismatch:
-
-```
-$ go-whatchanged github.com/charmbracelet/lipgloss@v2.0.0
-go-whatchanged: go mod download github.com/charmbracelet/lipgloss@v2.0.0:
-  invalid version: go.mod has post-v2 module path "charm.land/lipgloss/v2" at revision v2.0.0
-```
-
-go-whatchanged only reads the module, so instead it follows the path the
-module declares, once, and says so on the standard error:
-
-```
-$ go-whatchanged github.com/charmbracelet/lipgloss@v2.0.0 @v2.0.6
-github.com/charmbracelet/lipgloss declares its module path as charm.land/lipgloss/v2; diffing that instead
-```
-
-A head that named no module of its own follows the base, so both sides
-stay on one module line: left behind, `@HEAD` or `@main` would resolve
-under the old path, which for a repository that has moved on is the major
-version before this one. A side that names its own module keeps it, so a
-diff across the move is still `github.com/x/m@v1.9.0 github.com/x/m@v2.0.0`.
-
-Only the two sides are ever redirected: a dependency is always fetched
-under the path its importers spell. `--resolve-module-path=never` refuses
-the mismatch instead, the way the `go` command does.
 
 ### Examples
 
