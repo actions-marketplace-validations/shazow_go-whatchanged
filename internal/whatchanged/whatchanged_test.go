@@ -1454,8 +1454,8 @@ var Default = Open
 	h := f.commit("base")
 	f.tag("v1.0.0", h)
 
-	// deps swaps a standard library import for a dependency: only the
-	// latter is an import change, and its package has no API change.
+	// deps swaps a standard library import for a dependency: both are
+	// import changes, and its package has no API change.
 	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.com/dep v1.0.0\n")
 	f.write("deps/deps.go", "package deps\n\nimport \"example.com/dep\"\n\nfunc Use() { dep.Do() }\n")
 	f.write("store/store.go", `package store
@@ -2582,14 +2582,14 @@ func TestFilterMainPackages(t *testing.T) {
 	mustNotContain(t, r.stdout, `"main"`)
 }
 
-// TestImports covers import changes: the packages of other modules that a
-// package started or stopped importing are listed before its changes, in
-// every layout, and never count. The standard library and the module's own
-// packages are not tracked, a nested module is another module, and a
-// replaced module without a dot in its path is not the standard library.
-// A new package brings all of its dependencies, a removed one loses them,
-// and a package whose imports alone changed is listed without counting as
-// changed. --filter=api leaves the imports out, --filter=imports shows
+// TestImports covers import changes: the packages from outside the module
+// that a package started or stopped importing are listed before its
+// changes, in every layout, and never count. The standard library is
+// tracked along with other modules' packages, a nested module and a
+// replaced module without a dot in its path are both other modules, and
+// only the module's own packages are left out. A new package brings all of
+// its imports, a removed one loses them, and a package whose imports alone
+// changed is listed without counting as changed. --filter=api leaves the imports out, --filter=imports shows
 // nothing else, and breaking hides them as compatible changes.
 func TestImports(t *testing.T) {
 	t.Parallel()
@@ -2607,9 +2607,10 @@ func TestImports(t *testing.T) {
 	f.commit("base")
 
 	// store: drops os and other, keeps fmt and dep, gains strings, a
-	// sibling package, a package of dep, the nested module and the
-	// replaced module, and removes a function; util: only its imports
-	// change; gone is removed and fresh added, each with dependencies.
+	// sibling package of its own module that is never listed, a package of
+	// dep, the nested module and the replaced module, and removes a
+	// function; util: only its imports change, a standard library swap
+	// among them; gone is removed and fresh added, each with imports.
 	f.write("store/store.go", "package store\n\nimport (\n\t\"fmt\"\n\t\"strings\"\n\n\t\"example.com/dep\"\n\t\"example.com/dep/sub\"\n\t\"example.com/m/nested\"\n\t\"example.com/m/util\"\n\t\"foo\"\n)\n\nfunc Name() string { dep.Do(); sub.Do(); nested.Do(); foo.Do(); return fmt.Sprint(strings.ToUpper(util.Up(\"\"))) }\n")
 	f.write("util/util.go", "package util\n\nimport (\n\t\"bytes\"\n\n\t\"example.com/dep\"\n)\n\nfunc Up(s string) string { dep.Do(); return string(bytes.ToUpper([]byte(s))) }\n")
 	f.remove("gone/gone.go")
@@ -2624,13 +2625,17 @@ func TestImports(t *testing.T) {
 		"  - func Gone() string\n\n" +
 		"example.com/m/store\n" +
 		"  - import \"example.com/other\"\n" +
+		"  - import \"os\"\n" +
 		"  + import \"example.com/dep/sub\"\n" +
 		"  + import \"example.com/m/nested\"\n" +
 		"  + import \"foo\"\n" +
+		"  + import \"strings\"\n" +
 		"  - func Open() error\n" +
 		"  + func Name() string\n\n" +
 		"example.com/m/util\n" +
 		"  - import \"example.com/other\"\n" +
+		"  - import \"strings\"\n" +
+		"  + import \"bytes\"\n" +
 		"  + import \"example.com/dep\"\n\n" +
 		"3 packages changed · 2 incompatible · 2 compatible · would require: MAJOR\n"
 	if r.stdout != want {
@@ -2656,11 +2661,15 @@ func TestImports(t *testing.T) {
 		"  - import \"example.com/dep\"\n\n" +
 		"example.com/m/store\n" +
 		"  - import \"example.com/other\"\n" +
+		"  - import \"os\"\n" +
 		"  + import \"example.com/dep/sub\"\n" +
 		"  + import \"example.com/m/nested\"\n" +
-		"  + import \"foo\"\n\n" +
+		"  + import \"foo\"\n" +
+		"  + import \"strings\"\n\n" +
 		"example.com/m/util\n" +
 		"  - import \"example.com/other\"\n" +
+		"  - import \"strings\"\n" +
+		"  + import \"bytes\"\n" +
 		"  + import \"example.com/dep\"\n\n" +
 		"3 packages changed · 2 incompatible · 2 compatible · would require: MAJOR\n"
 	if r.stdout != want {
@@ -2674,8 +2683,8 @@ func TestImports(t *testing.T) {
 
 	r = f.mustRun("HEAD", "", Options{Format: render.Markdown})
 	mustContain(t, r.stdout,
-		"### `example.com/m/store`\n\n```go\n// Removed\nimport \"example.com/other\"\nfunc Open() error\n\n// Added\nimport \"example.com/dep/sub\"\nimport \"example.com/m/nested\"\nimport \"foo\"\nfunc Name() string\n```\n",
-		"### `example.com/m/util`\n\n```go\n// Removed\nimport \"example.com/other\"\n\n// Added\nimport \"example.com/dep\"\n```\n")
+		"### `example.com/m/store`\n\n```go\n// Removed\nimport \"example.com/other\"\nimport \"os\"\nfunc Open() error\n\n// Added\nimport \"example.com/dep/sub\"\nimport \"example.com/m/nested\"\nimport \"foo\"\nimport \"strings\"\nfunc Name() string\n```\n",
+		"### `example.com/m/util`\n\n```go\n// Removed\nimport \"example.com/other\"\nimport \"strings\"\n\n// Added\nimport \"bytes\"\nimport \"example.com/dep\"\n```\n")
 
 	r = f.mustRun("HEAD", "", Options{Format: render.JSON})
 	var rep struct {
@@ -2709,8 +2718,8 @@ func TestImports(t *testing.T) {
 	wantJSON := map[string]string{
 		"example.com/m/fresh": "new changes=1 added example.com/other",
 		"example.com/m/gone":  "removed changes=1 removed example.com/dep",
-		"example.com/m/store": "changed changes=2 removed example.com/other, added example.com/dep/sub, added example.com/m/nested, added foo",
-		"example.com/m/util":  "changed changes=0 removed example.com/other, added example.com/dep",
+		"example.com/m/store": "changed changes=2 removed example.com/other, removed os, added example.com/dep/sub, added example.com/m/nested, added foo, added strings",
+		"example.com/m/util":  "changed changes=0 removed example.com/other, removed strings, added bytes, added example.com/dep",
 	}
 	if !maps.Equal(got, wantJSON) {
 		t.Errorf("json packages = %v\nwant %v", got, wantJSON)
@@ -2722,7 +2731,7 @@ func TestImports(t *testing.T) {
 	f.remove("fresh/fresh.go")
 	f.write("gone/gone.go", "package gone\n\nimport (\n\t\"example.com/dep\"\n\t\"example.com/m/util\"\n)\n\nfunc Gone() string { dep.Do(); return util.Up(\"\") }\n")
 	r = f.mustRun("HEAD", "", Options{})
-	want = "example.com/m/util\n  - import \"example.com/other\"\n  + import \"example.com/dep\"\n\nno exported API changes\n"
+	want = "example.com/m/util\n  - import \"example.com/other\"\n  - import \"strings\"\n  + import \"bytes\"\n  + import \"example.com/dep\"\n\nno exported API changes\n"
 	if r.stdout != want {
 		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
 	}

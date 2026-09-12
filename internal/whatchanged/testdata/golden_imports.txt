@@ -1,6 +1,10 @@
 # stdout
 example.com/m/deps
+  - import "fmt"
   + import "example.com/dep"
+
+example.com/m/util
+  + import "fmt"
 
 4 packages changed · 7 incompatible · 4 compatible · would require: MAJOR (v1.0.0 → v2.0.0)
 

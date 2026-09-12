@@ -3,6 +3,7 @@
   [32m+ require example.com/dep v1.0.0[0m
 
 [1mexample.com/m/deps[0m
+  [31m- import "fmt"[0m
   [32m+ import "example.com/dep"[0m
 
 [1mexample.com/m/fresh (new)[0m
@@ -30,6 +31,7 @@
   [2m  }[0m
 
 [1mexample.com/m/util[0m
+  [32m+ import "fmt"[0m
   [1;32m+ func (Sizer) Size() int[0m
   [38;5;242m- type Stringer interface{ String() string }[0m
   [1;38;5;208m+ type Stringer = fmt.Stringer[0m

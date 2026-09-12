@@ -3,6 +3,7 @@ go.mod
   + require example.com/dep v1.0.0  go.mod:5:1
 
 example.com/m/deps
+  - import "fmt"
   + import "example.com/dep"
 
 example.com/m/fresh (new)
@@ -30,6 +31,7 @@ example.com/m/store
     }
 
 example.com/m/util
+  + import "fmt"
   + func (Sizer) Size() int       util/util.go:7:2
   - type Stringer interface{ String() string }
   + type Stringer = fmt.Stringer  util/util.go:10:6

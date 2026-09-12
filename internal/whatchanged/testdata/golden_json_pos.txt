@@ -24,6 +24,10 @@
       "changes": [],
       "imports": [
         {
+          "path": "fmt",
+          "kind": "removed"
+        },
+        {
           "path": "example.com/dep",
           "kind": "added"
         }
@@ -222,6 +226,12 @@
             "line": 10,
             "col": 6
           }
+        }
+      ],
+      "imports": [
+        {
+          "path": "fmt",
+          "kind": "added"
         }
       ]
     }
