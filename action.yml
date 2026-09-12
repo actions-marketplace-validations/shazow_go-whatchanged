@@ -1,8 +1,6 @@
 name: go-whatchanged
 description: >-
-  What changed in the public API? A semantic diff of a Go module's exported
-  API between two revisions, written to the job summary and posted as a
-  pull request comment.
+  What changed in the Go API? Semantic diff between versions.
 author: shazow
 branding:
   icon: git-pull-request
