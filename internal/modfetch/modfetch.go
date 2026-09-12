@@ -13,6 +13,8 @@ package modfetch
 import (
 	"context"
 	"errors"
+	"regexp"
+	"strings"
 
 	"golang.org/x/mod/module"
 
@@ -25,8 +27,11 @@ import (
 type Source interface {
 	// Resolve turns a query into the version it denotes: a semantic
 	// version, "latest", a branch or tag name, a commit prefix, or a
-	// comparison such as "<v1.5.0". A canonical version resolves to itself,
-	// so a Source that cannot evaluate queries may still serve exact ones.
+	// comparison such as "<v1.5.0". A canonical version of the path's own
+	// major version resolves to itself, so a Source that cannot evaluate
+	// queries may still serve exact ones. Resolve may answer under a
+	// different path than it was asked for, and its error may name one:
+	// see DeclaredPath.
 	Resolve(ctx context.Context, path, query string) (module.Version, error)
 
 	// Fetch obtains one module version and says where its tree is readable.
@@ -67,4 +72,39 @@ type Module struct {
 	// predate modules. Resolution reads this rather than Dir, so that a
 	// module without a go.mod of its own still resolves.
 	GoMod []byte
+}
+
+// declaredPath matches the module path a go command error reports as the
+// one the module's go.mod declares. The go command refuses the mismatch
+// rather than following it, so its message is where the declared path is
+// to be had: "go.mod has post-v2 module path "charm.land/lipgloss/v2" at
+// revision v2.0.0" for a vanity path or a missing major version suffix,
+// and "module declares its path as: X" for a proxied .mod file.
+var declaredPath = []*regexp.Regexp{
+	regexp.MustCompile(`module path "([^"]+)" at revision`),
+	regexp.MustCompile(`module path must match major version \("([^"]+)"\)`),
+	regexp.MustCompile(`module declares its path as:\s*(\S+)`),
+}
+
+// DeclaredPath returns the module path err says the module declares for
+// itself, or "" when err is not a module path mismatch or names nothing
+// usable. The caller decides whether to follow it: only a side of the diff
+// may be, since a dependency's path is the import path its importers
+// spell, which nothing is free to redirect.
+func DeclaredPath(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	for _, re := range declaredPath {
+		m := re.FindStringSubmatch(msg)
+		if m == nil {
+			continue
+		}
+		// A malformed path is reported the same way; it is no redirect.
+		if p := strings.TrimSpace(m[1]); module.CheckPath(p) == nil {
+			return p
+		}
+	}
+	return ""
 }

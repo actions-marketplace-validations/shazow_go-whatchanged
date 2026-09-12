@@ -10,7 +10,7 @@ What changed in the public API?
 two versions.
 
 - **Read-only:** Happy path is optimized to avoid writing to the filesystem (no temporary directories, git clones, or worktrees). Only `go` commands are used for comparing remote packages that are not already cached, use `--fsreadonly` to disable any features that rely on writing the filesystem.
-- **Release-aware:** All standard Go version tags supported (`@latest` for latest tagged release; `@v1.2.3` for a specific tag; `@HEAD` for a ref like HEAD, etc).
+- **Release-aware:** All standard Go version tags supported (`@latest` for latest tagged release; `@previous` for the release before it, which pairs the last two releases; `@v1.2.3` for a specific tag; `@HEAD` for a ref like HEAD, etc).
 - **CI-ready.** Markdown for pull requests, JSON for tools, exit codes for
   gates, and a [GitHub Action](#github-action) that posts the diff to the
   job summary and as a pull request comment.
@@ -49,9 +49,11 @@ go install github.com/shazow/go-whatchanged@latest
 | What do my uncommitted changes do to the API? | `go-whatchanged` |
 | What has changed since the last release? | `go-whatchanged @latest` |
 | What did release `v1.4.0` ship? | `go-whatchanged @latest @v1.4.0` |
+| What did the last release ship? | `go-whatchanged @previous` |
 | What does this branch change, compared to `main`? | `go-whatchanged @origin/main` |
 | What is unreleased on `main` of a module I don't have checked out? | `go-whatchanged github.com/stretchr/testify@latest` |
 | What did a published release change? | `go-whatchanged github.com/stretchr/testify@v1.9.0 @v1.10.0` |
+| What did its last release change? | `go-whatchanged github.com/stretchr/testify@previous` |
 | What has changed since the last release in another checkout? | `go-whatchanged ~/src/m@latest` |
 | Which of these changes break importers? | `go-whatchanged --filter=breaking @latest` |
 | What changed in the commands, the `main` packages? | `go-whatchanged --filter=main @latest` |
@@ -65,12 +67,13 @@ go-whatchanged [options] [<base> [<head>]]
 
   base   the old side, as location@version: @v1.4.0, @HEAD~2 or
          @origin/main in the current repository, @latest for its newest
-         release tag among the ancestors of head; github.com/x/m@v1.2.0 or
+         release tag among the ancestors of head, @previous for the
+         release before that one; github.com/x/m@v1.2.0 or
          github.com/x/m@latest for a published module; ~/src/m@v1.2.0 for
          another checkout. Default: @HEAD.
   head   the new side, in the same forms. @main alone means main in the
-         base's repository or module. Default: the working tree, or @HEAD
-         for a module.
+         base's repository or module. Default: the working tree, @HEAD
+         for a module, or @latest for a @previous base.
 
 Options:
   --pkg=PATTERN      diff only packages matching PATTERN (repeatable)
@@ -84,6 +87,10 @@ Options:
   --format=LAYOUT    text | markdown (or md) | json (default text)
   --color=WHEN       auto | always | never (default auto; honors NO_COLOR)
   --strict           type-check errors are fatal (default: warn)
+  --resolve-module-path=WHEN
+                     auto | never: follow the module path a module side's
+                     go.mod declares when the location given is not that
+                     path (default auto)
   --fsreadonly       never write to the filesystem or run the go command
   --exit-fail=LEVEL  exit 100/101/102 when the required bump is major, minor
                      or patch, or higher
@@ -120,6 +127,27 @@ that tag; name it instead: `go-whatchanged @v1.4.0`.
 At `v0` an incompatible change suggests the next minor, and a pre-release
 always suggests its final release.
 
+### The last two releases
+
+`@previous` is the release before the newest one, and with no head of its
+own it pairs with `@latest`, so `go-whatchanged @previous` is what the
+last release shipped without naming either tag:
+
+```
+$ go-whatchanged @previous
+example.com/m/util
+  + func Pad(s string, n int) string
+
+1 package changed · 0 incompatible · 1 compatible · would require: MINOR (v1.3.0 → v1.4.0)
+```
+
+Unlike `@latest`, a tag on the head commit counts, so a fresh release is
+the newest one the moment it is tagged. It works for a published module
+too, where it is the version below `@latest`: `go-whatchanged
+github.com/stretchr/testify@previous`. A head of its own overrides the
+pairing, so `go-whatchanged @previous @main` is the last release plus
+whatever is unreleased on `main`.
+
 ### Naming the sides
 
 Each side is `location@version`, the way the go command names versions.
@@ -128,8 +156,9 @@ The location is a module path, a directory, or nothing:
 | Location | `@version` means | Alone |
 |---|---|---|
 | none: `@v1.4.0`, `@HEAD~2`, `@origin/main` | a revision of the current repository, or for the head, of the base's repository or module | the default: `@HEAD` as base, the working tree as head |
-| `@latest` | the newest release tag among the ancestors of the head | |
-| a module path: `github.com/x/m@v1.2.0` | a published module version, fetched into the module cache; `@latest` its newest release, `@main` a branch, `@HEAD` the default branch, `@abc1234` a commit | an error: a module needs a version |
+| `@latest` | the newest release tag among the ancestors of the head; as the head, the newest reachable from `HEAD` | |
+| `@previous` | the release before the newest one; a base only, and its head defaults to `@latest` | |
+| a module path: `github.com/x/m@v1.2.0` | a published module version, fetched into the module cache; `@latest` its newest release, `@previous` the one before it, `@main` a branch, `@HEAD` the default branch, `@abc1234` a commit | an error: a module needs a version |
 | a directory: `~/src/m@v1.2.0`, `./m@latest`, `../m@main` | a revision of that checkout | that checkout's `HEAD` as base, its working tree as head |
 
 A directory is anything spelled as a path, starting with `./`, `../`, `~/`
@@ -138,6 +167,37 @@ versions come through the proxy the go command is configured for, and a
 branch or `@HEAD` may lag the repository by the proxy's cache. A version
 whose go.mod declares go 1.16 or older cannot be diffed; see
 [Limitations](#limitations).
+
+#### When the location is not the module path
+
+A module's path is whatever its go.mod declares, which need not be the
+repository it is served from: `github.com/charmbracelet/lipgloss@v2.0.0`
+is the module `charm.land/lipgloss/v2`, and `github.com/x/m@v2.0.0` is
+`github.com/x/m/v2`. The `go` command refuses the mismatch:
+
+```
+$ go-whatchanged github.com/charmbracelet/lipgloss@v2.0.0
+go-whatchanged: go mod download github.com/charmbracelet/lipgloss@v2.0.0:
+  invalid version: go.mod has post-v2 module path "charm.land/lipgloss/v2" at revision v2.0.0
+```
+
+go-whatchanged only reads the module, so instead it follows the path the
+module declares, once, and says so on the standard error:
+
+```
+$ go-whatchanged github.com/charmbracelet/lipgloss@v2.0.0 @v2.0.6
+github.com/charmbracelet/lipgloss declares its module path as charm.land/lipgloss/v2; diffing that instead
+```
+
+A head that named no module of its own follows the base, so both sides
+stay on one module line: left behind, `@HEAD` or `@main` would resolve
+under the old path, which for a repository that has moved on is the major
+version before this one. A side that names its own module keeps it, so a
+diff across the move is still `github.com/x/m@v1.9.0 github.com/x/m@v2.0.0`.
+
+Only the two sides are ever redirected: a dependency is always fetched
+under the path its importers spell. `--resolve-module-path=never` refuses
+the mismatch instead, the way the `go` command does.
 
 ### Examples
 

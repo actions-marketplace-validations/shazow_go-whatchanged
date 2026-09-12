@@ -49,6 +49,12 @@ func parseTargets(baseArg, headArg string) (base, head target, err error) {
 		if head, err = parseTarget(headArg, base); err != nil {
 			return base, head, fmt.Errorf("head %q: %w", headArg, err)
 		}
+	// A base that names the release before the newest one pairs with that
+	// newest release, so that @previous alone is the last release's diff.
+	case base.query == PreviousRelease:
+		head = target{dir: base.dir, query: LatestRelease}
+	case base.module != "" && base.query == previousQuery:
+		head = target{module: base.module, query: "latest"}
 	case base.module != "":
 		head = target{module: base.module, query: "HEAD"}
 	default:
@@ -57,8 +63,8 @@ func parseTargets(baseArg, headArg string) (base, head target, err error) {
 	switch {
 	case head.module != "" && head.query == "":
 		return base, head, fmt.Errorf("head %q: a module needs a version: %s@HEAD, %s@v1.2.3", headArg, head.module, head.module)
-	case head.module == "" && head.query == LatestRelease:
-		return base, head, fmt.Errorf("%s can only be the base revision", LatestRelease)
+	case head.query == PreviousRelease || (head.module != "" && head.query == previousQuery):
+		return base, head, fmt.Errorf("%s can only be the base revision", PreviousRelease)
 	}
 	return base, head, nil
 }
@@ -97,10 +103,14 @@ func parseTarget(arg string, inherit target) (target, error) {
 }
 
 // gitQuery maps the version suffix of a git target to a revision: "latest"
-// is the newest release tag, as the bare @latest is.
+// is the newest release tag and "previous" the release before it, as the
+// bare @latest and @previous are.
 func gitQuery(q string) string {
-	if q == "latest" {
+	switch q {
+	case "latest":
 		return LatestRelease
+	case previousQuery:
+		return PreviousRelease
 	}
 	return q
 }

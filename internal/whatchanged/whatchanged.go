@@ -104,6 +104,16 @@ type Options struct {
 	// the run read-only: a missing module is an error and a module version
 	// cannot be diffed, both wrapping modfetch.ErrReadOnly.
 	Fetch modfetch.Source
+	// ExactModulePath refuses a module side whose location is not the
+	// module path its go.mod declares, the way the go command does,
+	// instead of retrying it once under the declared path. The mismatch
+	// is what a vanity import path looks like from the repository it is
+	// served from (github.com/charmbracelet/lipgloss@v2.0.0, whose module
+	// path is charm.land/lipgloss/v2), and what a major version suffix
+	// the location lacks looks like (github.com/x/m@v2.0.0, whose module
+	// path is github.com/x/m/v2). Only the sides are ever redirected: a
+	// dependency is fetched under the path its importers spell.
+	ExactModulePath bool
 
 	// Stdout receives the diff; Stderr receives warnings.
 	Stdout, Stderr io.Writer
@@ -312,7 +322,7 @@ func exitCode(sum render.Summary, fail FailOn) int {
 // disk (fs == nil) or from an arbitrary read-only filesystem (tests), or a
 // module version fetched through Options.Fetch.
 type sideSpec struct {
-	rev    string         // git revision; LatestRelease until resolveBase
+	rev    string         // git revision; LatestRelease or PreviousRelease until resolveSides
 	dir    string         // working tree directory
 	fs     vfs.FS         // filesystem serving the working tree, instead of dir
 	open   openFunc       // the repository of a git or working tree side
@@ -331,9 +341,10 @@ type side struct {
 	treeRoot  string // the mounted tree, or the repository on disk, holding root
 	mountPath string // synthetic path the side's tree is mounted at, "" on disk
 	overlay   *vfs.Overlay
-	root      string // the module root within the overlay
-	prefix    string // root as a path prefix, rewritten to label+":" in messages
-	gomod     []byte // the go.mod of a module side, from the fetch
+	root      string    // the module root within the overlay
+	prefix    string    // root as a path prefix, rewritten to label+":" in messages
+	gomod     []byte    // the go.mod of a module side, from the fetch
+	redirect  [2]string // the module path the command line named and the one fetched instead, both empty for no redirect
 	res       *modres.Resolver
 	ld        *loader.Loader
 	pkgs      map[string]*types.Package
@@ -386,13 +397,20 @@ type openFunc func() (*git.Repository, error)
 // revisions spuriously unresolvable ("reference not found"). The first side
 // to fail cancels the other's context, which stops its fetches.
 func compare(ctx context.Context, base, head sideSpec, env modres.Env, opts Options) (*render.Result, error) {
-	if head.rev == LatestRelease {
-		return nil, fmt.Errorf("%s can only be the base revision", LatestRelease)
+	if head.rev == PreviousRelease {
+		return nil, fmt.Errorf("%s can only be the base revision", PreviousRelease)
 	}
-	base, head, baseVersion, err := resolveSides(ctx, base, head, env, opts.Fetch)
+	asked := [2]string{base.mod.Path, head.mod.Path}
+	base, head, baseVersion, err := resolveSides(ctx, base, head, env, opts)
 	if err != nil {
 		return nil, err
 	}
+	// A side may have been resolved under the module path its go.mod
+	// declares rather than the location the command line named; the sides
+	// load in parallel, so the ones a fetch redirected are reported once
+	// they are both in.
+	noted := map[string]bool{}
+	noteRedirects(opts.Stderr, noted, [2]string{asked[0], base.mod.Path}, [2]string{asked[1], head.mod.Path})
 
 	fset := token.NewFileSet()
 	shared := loader.NewSharedCache()
@@ -424,6 +442,7 @@ func compare(ctx context.Context, base, head sideSpec, env modres.Env, opts Opti
 			return nil, err
 		}
 	}
+	noteRedirects(opts.Stderr, noted, sides[0].redirect, sides[1].redirect)
 	res := diffSides(sides[0], sides[1], fset)
 	res.Base, res.Head = sides[0].label, sides[1].label
 	if baseVersion != "" {
@@ -453,17 +472,20 @@ func unmatchedPatterns(patterns []string, base, head *side) []render.Warning {
 // mount serves the tree the spec names, from the git revision, the
 // filesystem, the directory on disk or the fetched module, and returns the
 // side with its label, its overlay and the module root within it; loadSide
-// does the rest. src fetches a module side.
-func (spec sideSpec) mount(ctx context.Context, src modfetch.Source) (*side, error) {
+// does the rest. Options.Fetch fetches a module side.
+func (spec sideSpec) mount(ctx context.Context, opts Options) (*side, error) {
 	s := &side{rev: spec.rev}
 	switch {
 	case spec.mod.Path != "":
-		if src == nil {
+		if opts.Fetch == nil {
 			return nil, readOnlyError(spec.mod)
 		}
-		m, err := src.Fetch(ctx, spec.mod)
+		m, err := fetchSide(ctx, spec.mod, opts)
 		if err != nil {
 			return nil, err
+		}
+		if m.Path != spec.mod.Path {
+			s.redirect = [2]string{spec.mod.Path, m.Path}
 		}
 		s.label = m.Version.String()
 		s.name = s.label
@@ -583,7 +605,7 @@ func (s *side) goWork() string {
 }
 
 func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, fset *token.FileSet, shared *loader.SharedCache) (*side, error) {
-	s, err := spec.mount(ctx, opts.Fetch)
+	s, err := spec.mount(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -694,6 +716,44 @@ func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, 
 		return nil, fmt.Errorf("%s: %w", s.name, err)
 	}
 	return s, nil
+}
+
+// fetchSide fetches the module version one side of the diff names,
+// following the module path the go command reports when the location is
+// not the path the module declares for itself; see redirect. Only a side
+// goes through here: a dependency is fetched under the path its importers
+// spell, which nothing may redirect.
+func fetchSide(ctx context.Context, mod module.Version, opts Options) (*modfetch.Module, error) {
+	m, err := opts.Fetch.Fetch(ctx, mod)
+	if err == nil {
+		return m, nil
+	}
+	declared, ok := redirect(mod.Path, err, opts)
+	if !ok {
+		return nil, err
+	}
+	alt, altErr := opts.Fetch.Fetch(ctx, module.Version{Path: declared, Version: mod.Version})
+	if altErr != nil {
+		// The module the location named is what was asked for, so its
+		// error is the one to report.
+		return nil, err
+	}
+	return alt, nil
+}
+
+// noteRedirects reports on the standard error each module path a side was
+// diffed under rather than the one the command line named, which nothing
+// else in the output makes plain. seen keeps the redirect of a location
+// both sides share from being reported twice, once per side.
+func noteRedirects(w io.Writer, seen map[string]bool, redirects ...[2]string) {
+	for _, r := range redirects {
+		from, to := r[0], r[1]
+		if w == nil || from == "" || to == "" || from == to || seen[from+" "+to] {
+			continue
+		}
+		seen[from+" "+to] = true
+		fmt.Fprintf(w, "%s declares its module path as %s; diffing that instead\n", from, to)
+	}
 }
 
 // readOnlyError is the error for a module version that a run without a

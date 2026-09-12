@@ -143,8 +143,10 @@ jobs:
 **Release notes on a tag push.** Without a pull request the base is
 `@latest`, the newest release tag before the head commit, so on a tag
 push the job summary lists what the tag ships and the `markdown` output
-carries it, ready for the release notes. The very first tag has no
-release before it and the step fails saying so:
+carries it, ready for the release notes. (On any other event, `base:
+"@previous"` with `head: ""` diffs the last two releases wherever the
+checkout stands.) The very first tag has no release before it and the
+step fails saying so:
 
 ```yaml
 name: Release notes
@@ -215,8 +217,8 @@ jobs:
 
 | Input | Default | Meaning |
 |---|---|---|
-| `base` | the pull request's merge-base, else `@latest` | The old side, `@rev` or `@latest`. |
-| `head` | `@HEAD` | The new side, `@rev`. Empty means the working tree. |
+| `base` | the pull request's merge-base, else `@latest` | The old side, `@rev`, `@latest` or `@previous`. |
+| `head` | `@HEAD` | The new side, `@rev`. Empty means the working tree, or `@latest` for a base of `@previous`. |
 | `working-directory` | `.` | The module to diff, for repositories with several. |
 | `pkg`, `exclude` | | Package patterns, comma- or newline-separated. |
 | `filter` | `default` | `default` (every package, the `api`, `imports` and `mod` changes), `all` (the `tests` too), or any of `public`, `internal` and `main` for the packages and `api`, `imports`, `mod` and `tests` for the kinds of change: `public,main`, `public,api`, `default,tests`. |

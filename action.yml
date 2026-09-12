@@ -12,15 +12,17 @@ inputs:
   base:
     description: >-
       The old side, as go-whatchanged names one: @rev for a revision of the
-      checkout (a hash, tag, branch, HEAD~2, ...) or @latest for the newest
-      release tag among the ancestors of head. Default: on a pull_request
-      event, the merge-base of head and the base branch; otherwise @latest.
+      checkout (a hash, tag, branch, HEAD~2, ...), @latest for the newest
+      release tag among the ancestors of head, or @previous for the release
+      before that one, which with an empty head diffs the last two releases.
+      Default: on a pull_request event, the merge-base of head and the base
+      branch; otherwise @latest.
     required: false
     default: ""
   head:
     description: >-
       The new side, @rev. Empty means the working tree, including
-      uncommitted files.
+      uncommitted files, or @latest for a base of @previous.
     required: false
     default: "@HEAD"
   working-directory:

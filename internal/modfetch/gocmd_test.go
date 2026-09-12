@@ -2,6 +2,7 @@ package modfetch
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -25,6 +26,7 @@ for arg; do
 	example.com/m@nope) echo '{"Path":"example.com/m","Error":{"Err":"no matching versions for query \"nope\""}}' ;;
 	example.com/m@v1.2.0) printf '{"Path":"example.com/m","Version":"v1.2.0","GoMod":"%s","Dir":"%s"}\n' "$GOFAKE_GOMOD" "$GOFAKE_DIR" ;;
 	example.com/m@v9.9.9) echo '{"Path":"example.com/m","Version":"v9.9.9","Error":"example.com/m@v9.9.9: reading https://proxy/example.com/m/@v/v9.9.9.info: 404 Not Found"}'; rc=1 ;;
+	example.com/m@v2.0.0) echo '{"Path":"example.com/m","Version":"v2.0.0","Error":{"Err":"example.com/m@v2.0.0: invalid version: go.mod has post-v2 module path \"vanity.example/m/v2\" at revision v2.0.0"}}' ;;
 	*@*) echo "go: cannot serve $arg" >&2; exit 1 ;;
 	esac
 done
@@ -85,6 +87,37 @@ func TestGoCommandResolve(t *testing.T) {
 	_, err = g.Resolve(ctx, "example.com/m", "nope")
 	if err == nil || err.Error() != `go list -m example.com/m@nope: no matching versions for query "nope"` {
 		t.Errorf("Resolve(nope) = %v", err)
+	}
+
+	// A canonical version of another major version cannot belong to the
+	// path as written, so it does run the go command, whose error names
+	// the path the module declares.
+	_, err = g.Resolve(ctx, "example.com/m", "v2.0.0")
+	if err == nil {
+		t.Fatal("Resolve(v2.0.0) = nil; want the go command's error")
+	}
+	if got := DeclaredPath(err); got != "vanity.example/m/v2" {
+		t.Errorf("DeclaredPath(%v) = %q", err, got)
+	}
+}
+
+func TestDeclaredPath(t *testing.T) {
+	for _, tc := range []struct{ err, want string }{
+		{`github.com/charmbracelet/lipgloss@v2.0.0: invalid version: go.mod has post-v2 module path "charm.land/lipgloss/v2" at revision v2.0.0`, "charm.land/lipgloss/v2"},
+		{`go.mod has non-.../v2 module path "example.com/m" at revision v2.0.0`, "example.com/m"},
+		{`invalid version: module contains a go.mod file, so module path must match major version ("github.com/go-yaml/yaml/v2")`, "github.com/go-yaml/yaml/v2"},
+		{"parsing go.mod:\n\tmodule declares its path as: example.com/m\n\t        but was required as: example.com/other", "example.com/m"},
+		// Nothing to follow: another failure, or a path no module may have.
+		{"example.com/m@v1.0.0: reading https://proxy/...: 404 Not Found", ""},
+		{`go.mod has malformed module path "Example.com/../m" at revision v1.0.0`, ""},
+		{"", ""},
+	} {
+		if got := DeclaredPath(errors.New(tc.err)); got != tc.want {
+			t.Errorf("DeclaredPath(%q) = %q, want %q", tc.err, got, tc.want)
+		}
+	}
+	if got := DeclaredPath(nil); got != "" {
+		t.Errorf("DeclaredPath(nil) = %q", got)
 	}
 }
 

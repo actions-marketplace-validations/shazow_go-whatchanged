@@ -70,6 +70,34 @@ func TestParseArgs(t *testing.T) {
 	} else if opts.Fetch != nil {
 		t.Errorf("--fsreadonly: Fetch = %T, want nil", opts.Fetch)
 	}
+	// A module side whose location is not its module path is followed by
+	// default, and refused with --resolve-module-path=never.
+	if opts.ExactModulePath {
+		t.Error("default ExactModulePath = true, want false")
+	}
+	for _, tc := range []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"--resolve-module-path=auto"}, false},
+		{[]string{"--resolve-module-path=never"}, true},
+		{[]string{"--resolve-module-path", "never"}, true},
+	} {
+		o, err := parseArgs(tc.args)
+		if err != nil {
+			t.Fatalf("%v: %v", tc.args, err)
+		}
+		opts, err := o.whatchanged()
+		if err != nil {
+			t.Fatalf("%v: %v", tc.args, err)
+		}
+		if opts.ExactModulePath != tc.want {
+			t.Errorf("%v: ExactModulePath = %v, want %v", tc.args, opts.ExactModulePath, tc.want)
+		}
+	}
+	if _, err := parseArgs([]string{"--resolve-module-path=nope"}); err == nil {
+		t.Error("--resolve-module-path=nope: no error")
+	}
 
 	o, err = parseArgs([]string{"--filter=internal", "--pkg", "store/...,util", "--pkg=a", "--exclude", "b", "--format", "md", "--exit-fail=minor", "--filter", "breaking", "--pos", "--filter=api", "--color=never", "v1.4.0", "HEAD"})
 	if err != nil {
