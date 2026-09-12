@@ -995,10 +995,15 @@ func TestModuleSides(t *testing.T) {
 		t.Errorf("labels = %q, %q", r.res.Base, r.res.Head)
 	}
 
-	// Without a source there is nothing to fetch a module version with.
+	// Without a source there is nothing to fetch a module version with,
+	// and a query that would take two lookups is refused before the first.
 	r = f.runSpecs(lib("latest"), lib("HEAD"), Options{})
 	if !errors.Is(r.err, modfetch.ErrReadOnly) || !strings.Contains(r.err.Error(), "example.org/lib@latest: diffing a module version") {
 		t.Errorf("without a source: %v", r.err)
+	}
+	r = f.runSpecs(lib(previousQuery), lib("latest"), Options{})
+	if !errors.Is(r.err, modfetch.ErrReadOnly) || !strings.Contains(r.err.Error(), "example.org/lib@previous: diffing a module version") {
+		t.Errorf("@previous without a source: %v", r.err)
 	}
 }
 
@@ -1051,6 +1056,17 @@ func TestModulePathRedirect(t *testing.T) {
 		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
 	}
 	mustContain(t, r.err.Error(), `go.mod has post-v2 module path "vanity.example/m/v2" at revision v2.0.0`)
+	if r.stderr != "" {
+		t.Errorf("stderr = %q, want none", r.stderr)
+	}
+
+	// A read-only run has no go command to ask, so the mismatch is the
+	// refusal a module side always gets, named as the command line named
+	// it; nothing is redirected and nothing is fetched.
+	r = f.runSpecs(base, head, Options{})
+	if !errors.Is(r.err, modfetch.ErrReadOnly) || !strings.Contains(r.err.Error(), "example.com/m@v2.0.0: diffing a module version") {
+		t.Errorf("without a source: %v", r.err)
+	}
 	if r.stderr != "" {
 		t.Errorf("stderr = %q, want none", r.stderr)
 	}
@@ -2096,7 +2112,9 @@ func TestPreviousRelease(t *testing.T) {
 
 	// The pair parseTargets builds for a bare @previous: the two newest
 	// releases, which is what the newest one shipped. Neither the commits
-	// after it nor the working tree take part.
+	// after it nor the working tree take part. Options carries no Fetch,
+	// so every run here is a read-only one: two release tags of the
+	// repository need no download and no go command.
 	r := f.mustRun(PreviousRelease, LatestRelease, Options{})
 	mustContain(t, r.stdout, "  + func B()\n", "would require: MINOR (v1.0.0 → v1.1.0)\n")
 	mustNotContain(t, r.stdout, "func C()", "func D()")
