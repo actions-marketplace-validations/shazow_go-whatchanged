@@ -812,8 +812,9 @@ func TestUnresolvableImportIsFatal(t *testing.T) {
 // in-process Source would: nothing it serves is in the module cache.
 type fakeSource struct {
 	fs         billy.Filesystem
-	versions   map[string]string // query → version; anything else resolves to itself
+	versions   map[string]string // "path@query" or query → version; anything else resolves to itself
 	gomods     map[string]string // version → go.mod, for a tree that has none
+	declares   map[string]string // "path@version" or path → the module path its go.mod declares instead
 	mu         sync.Mutex
 	fetched    []module.Version
 	prefetched [][]module.Version
@@ -828,13 +829,38 @@ func (s *fakeSource) Prefetch(_ context.Context, mods []module.Version) error {
 }
 
 func (s *fakeSource) Resolve(_ context.Context, path, query string) (module.Version, error) {
-	if v, ok := s.versions[query]; ok {
+	// As the go command does, an exact version of the path's own major
+	// version resolves without a lookup, so a module that declares another
+	// path is only found out about at the fetch.
+	if module.CanonicalVersion(query) != query || module.Check(path, query) != nil {
+		if err := s.declaresError(path, query); err != nil {
+			return module.Version{}, err
+		}
+	}
+	if v, ok := s.versions[path+"@"+query]; ok {
+		query = v
+	} else if v, ok := s.versions[query]; ok {
 		query = v
 	}
 	return module.Version{Path: path, Version: query}, nil
 }
 
+// declaresError is the go command's refusal of a module whose go.mod
+// declares a path other than the one it was asked for.
+func (s *fakeSource) declaresError(path, version string) error {
+	declared, ok := s.declares[path+"@"+version]
+	if !ok {
+		if declared, ok = s.declares[path]; !ok {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s@%s: invalid version: go.mod has post-v2 module path %q at revision %s", path, version, declared, version)
+}
+
 func (s *fakeSource) Fetch(_ context.Context, mod module.Version) (*modfetch.Module, error) {
+	if err := s.declaresError(mod.Path, mod.Version); err != nil {
+		return nil, err
+	}
 	root := mod.String()
 	if fi, err := s.fs.Stat(root); err != nil || !fi.IsDir() {
 		return nil, fmt.Errorf("%s: not found", mod)
@@ -922,7 +948,7 @@ func TestModuleSides(t *testing.T) {
 	}
 	src := &fakeSource{
 		fs:       remote,
-		versions: map[string]string{"latest": "v1.1.0", "HEAD": tip},
+		versions: map[string]string{"latest": "v1.1.0", "HEAD": tip, "<v1.1.0": "v1.0.0"},
 		gomods:   map[string]string{"v1.0.0": "module example.org/lib\n\ngo 1.24\n"},
 	}
 	lib := func(q string) sideSpec { return sideSpec{mod: module.Version{Path: "example.org/lib", Version: q}} }
@@ -957,11 +983,142 @@ func TestModuleSides(t *testing.T) {
 	mustContain(t, r.stdout, "- func C()", "would require: MAJOR\n")
 	mustNotContain(t, r.stdout, "→")
 
-	// Without a source there is nothing to fetch a module version with.
+	// @previous for a module is the version below the one "latest"
+	// resolves to, which the source answers as a comparison query.
+	r = f.runSpecs(lib(previousQuery), lib("latest"), Options{Fetch: src})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "+ func B()", "would require: MINOR (v1.0.0 → v1.1.0)")
+	mustNotContain(t, r.stdout, "func C()")
+	if r.res.Base != "example.org/lib@v1.0.0" || r.res.Head != "example.org/lib@v1.1.0" {
+		t.Errorf("labels = %q, %q", r.res.Base, r.res.Head)
+	}
+
+	// Without a source there is nothing to fetch a module version with,
+	// and a query that would take two lookups is refused before the first.
 	r = f.runSpecs(lib("latest"), lib("HEAD"), Options{})
 	if !errors.Is(r.err, modfetch.ErrReadOnly) || !strings.Contains(r.err.Error(), "example.org/lib@latest: diffing a module version") {
 		t.Errorf("without a source: %v", r.err)
 	}
+	r = f.runSpecs(lib(previousQuery), lib("latest"), Options{})
+	if !errors.Is(r.err, modfetch.ErrReadOnly) || !strings.Contains(r.err.Error(), "example.org/lib@previous: diffing a module version") {
+		t.Errorf("@previous without a source: %v", r.err)
+	}
+}
+
+func TestModulePathRedirect(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.useFakeModcache()
+	remote := memfs.New()
+	for _, m := range []struct{ root, mod, body string }{
+		{"example.com/m@v1.5.0", "example.com/m", "func Old() {}\n"},
+		{"vanity.example/m/v2@v2.0.0", "vanity.example/m/v2", "func New() {}\n"},
+		{"vanity.example/m/v2@v2.1.0", "vanity.example/m/v2", "func New() {}\n\nfunc Newer() {}\n"},
+	} {
+		writeFile(t, remote, m.root+"/go.mod", "module "+m.mod+"\n\ngo 1.24\n")
+		writeFile(t, remote, m.root+"/m.go", "package m\n\n"+m.body)
+	}
+	src := &fakeSource{
+		fs:       remote,
+		declares: map[string]string{"example.com/m@v2.0.0": "vanity.example/m/v2"},
+		versions: map[string]string{"vanity.example/m/v2@HEAD": "v2.1.0", "example.com/m@HEAD": "v1.5.0"},
+	}
+	// The pair parseTargets builds for "example.com/m@v2.0.0": a head that
+	// named no module of its own.
+	base := sideSpec{mod: module.Version{Path: "example.com/m", Version: "v2.0.0"}}
+	head := sideSpec{mod: module.Version{Path: "example.com/m", Version: "HEAD"}}
+
+	// v2.0.0 cannot belong to a path without a major version suffix, so
+	// the go command names the path the module declares and the diff
+	// follows it — on both sides, or the head would stay on the v1 line
+	// the old path still serves.
+	r := f.runSpecs(base, head, Options{Fetch: src})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if r.res.Base != "vanity.example/m/v2@v2.0.0" || r.res.Head != "vanity.example/m/v2@v2.1.0" {
+		t.Errorf("labels = %q, %q", r.res.Base, r.res.Head)
+	}
+	mustContain(t, r.stdout, "+ func Newer()", "would require: MINOR (v2.0.0 → v2.1.0)")
+	mustNotContain(t, r.stdout, "func Old()")
+	mustContain(t, r.stderr, "example.com/m declares its module path as vanity.example/m/v2; diffing that instead")
+	// One note for the location, not one per side.
+	if n := strings.Count(r.stderr, "declares its module path"); n != 1 {
+		t.Errorf("stderr noted the redirect %d times:\n%s", n, r.stderr)
+	}
+
+	// --resolve-module=never refuses the mismatch, as the go command
+	// does, and reports what the go command said about it.
+	r = f.runSpecs(base, head, Options{Fetch: src, ExactModulePath: true})
+	if r.code != ExitError || r.err == nil {
+		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
+	}
+	mustContain(t, r.err.Error(), `go.mod has post-v2 module path "vanity.example/m/v2" at revision v2.0.0`)
+	if r.stderr != "" {
+		t.Errorf("stderr = %q, want none", r.stderr)
+	}
+
+	// A read-only run has no go command to ask, so the mismatch is the
+	// refusal a module side always gets, named as the command line named
+	// it; nothing is redirected and nothing is fetched.
+	r = f.runSpecs(base, head, Options{})
+	if !errors.Is(r.err, modfetch.ErrReadOnly) || !strings.Contains(r.err.Error(), "example.com/m@v2.0.0: diffing a module version") {
+		t.Errorf("without a source: %v", r.err)
+	}
+	if r.stderr != "" {
+		t.Errorf("stderr = %q, want none", r.stderr)
+	}
+
+	// A head that named a module of its own keeps it: a diff across the
+	// move is a diff of two module paths, which is what was asked for.
+	r = f.runSpecs(sideSpec{mod: module.Version{Path: "example.com/m", Version: "v1.5.0"}}, head, Options{Fetch: src})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if r.res.Base != "example.com/m@v1.5.0" || r.res.Head != "example.com/m@v1.5.0" {
+		t.Errorf("labels = %q, %q", r.res.Base, r.res.Head)
+	}
+}
+
+func TestModulePathRedirectOnFetch(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.useFakeModcache()
+	remote := memfs.New()
+	for _, v := range []string{"v1.0.0", "v1.1.0"} {
+		writeFile(t, remote, "vanity.example/m@"+v+"/go.mod", "module vanity.example/m\n\ngo 1.24\n")
+		body := "func A() {}\n"
+		if v == "v1.1.0" {
+			body += "\nfunc B() {}\n"
+		}
+		writeFile(t, remote, "vanity.example/m@"+v+"/m.go", "package m\n\n"+body)
+	}
+	// A vanity path at v1: nothing about the version says the location is
+	// wrong, so the go command only refuses it at the download.
+	src := &fakeSource{fs: remote, declares: map[string]string{"github.example/m": "vanity.example/m"}}
+	gh := func(v string) sideSpec { return sideSpec{mod: module.Version{Path: "github.example/m", Version: v}} }
+
+	r := f.runSpecs(gh("v1.0.0"), gh("v1.1.0"), Options{Fetch: src})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "+ func B()", "would require: MINOR (v1.0.0 → v1.1.0)")
+	mustContain(t, r.stderr, "github.example/m declares its module path as vanity.example/m; diffing that instead")
+	// One note for the location, though both sides were redirected.
+	if n := strings.Count(r.stderr, "declares its module path"); n != 1 {
+		t.Errorf("stderr noted the redirect %d times:\n%s", n, r.stderr)
+	}
+	if r.res.Base != "vanity.example/m@v1.0.0" || r.res.Head != "vanity.example/m@v1.1.0" {
+		t.Errorf("labels = %q, %q", r.res.Base, r.res.Head)
+	}
+
+	r = f.runSpecs(gh("v1.0.0"), gh("v1.1.0"), Options{Fetch: src, ExactModulePath: true})
+	if r.code != ExitError || r.err == nil {
+		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
+	}
+	mustContain(t, r.err.Error(), `go.mod has post-v2 module path "vanity.example/m" at revision v1.0.0`)
 }
 
 func TestParseTargets(t *testing.T) {
@@ -980,6 +1137,12 @@ func TestParseTargets(t *testing.T) {
 		{"@v1.4.0", "", target{dir: ".", query: "v1.4.0"}, target{dir: "."}},
 		{"@v1.4.0", "@main", target{dir: ".", query: "v1.4.0"}, target{dir: ".", query: "main"}},
 		{"@latest", "@HEAD", target{dir: ".", query: LatestRelease}, target{dir: ".", query: "HEAD"}},
+		{"@v1.4.0", "@latest", target{dir: ".", query: "v1.4.0"}, target{dir: ".", query: LatestRelease}},
+		// @previous pairs with the release it precedes.
+		{"@previous", "", target{dir: ".", query: PreviousRelease}, target{dir: ".", query: LatestRelease}},
+		{"@previous", "@main", target{dir: ".", query: PreviousRelease}, target{dir: ".", query: "main"}},
+		{"github.com/x/m@previous", "", target{module: "github.com/x/m", query: previousQuery}, target{module: "github.com/x/m", query: "latest"}},
+		{dir + "@previous", "", target{dir: dir, query: PreviousRelease}, target{dir: dir, query: LatestRelease}},
 		{"@origin/main", "", target{dir: ".", query: "origin/main"}, target{dir: "."}},
 		{"@HEAD@{1}", "@main@{upstream}", target{dir: ".", query: "HEAD@{1}"}, target{dir: ".", query: "main@{upstream}"}},
 		{"github.com/x/m@latest", "", target{module: "github.com/x/m", query: "latest"}, target{module: "github.com/x/m", query: "HEAD"}},
@@ -1012,7 +1175,8 @@ func TestParseTargets(t *testing.T) {
 		{"github.com/x/m", "", "a module needs a version: github.com/x/m@latest"},
 		{"github.com/x/m@v1", "github.com/x/n", "a module needs a version: github.com/x/n@HEAD"},
 		{"@v1", "@", "missing a version"},
-		{"@v1", "@latest", "can only be the base"},
+		{"@v1", "@previous", "@previous can only be the base revision"},
+		{"github.com/x/m@v1.0.0", "@previous", "@previous can only be the base revision"},
 		// Without an @, an argument is a location: a bare revision is not
 		// a module path, and a directory is spelled as a path.
 		{"v1.4.0", "", "a tag, branch or commit of the current repository is written with an @: @v1.4.0"},
@@ -1927,12 +2091,86 @@ func TestLatestRelease(t *testing.T) {
 	r = f.mustRun(LatestRelease, "", Options{})
 	mustContain(t, r.stdout, "  - func A()\n", "would require: MAJOR (v0.2.0 → v0.3.0)\n")
 
-	// @latest is only meaningful as the base.
-	r = f.run("HEAD", LatestRelease, Options{})
+	// @previous is only meaningful as the base.
+	r = f.run("HEAD", PreviousRelease, Options{})
 	if r.code != ExitError || r.err == nil {
 		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
 	}
-	mustContain(t, r.err.Error(), "@latest can only be the base revision")
+	mustContain(t, r.err.Error(), "@previous can only be the base revision")
+}
+
+func TestPreviousRelease(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	f.tag("v1.0.0", f.commit("one"))
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n")
+	f.tag("v1.1.0", f.commit("two"))
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n\nfunc C() {}\n")
+	three := f.commit("three")
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n\nfunc C() {}\n\nfunc D() {}\n")
+
+	// The pair parseTargets builds for a bare @previous: the two newest
+	// releases, which is what the newest one shipped. Neither the commits
+	// after it nor the working tree take part. Options carries no Fetch,
+	// so every run here is a read-only one: two release tags of the
+	// repository need no download and no go command.
+	r := f.mustRun(PreviousRelease, LatestRelease, Options{})
+	mustContain(t, r.stdout, "  + func B()\n", "would require: MINOR (v1.0.0 → v1.1.0)\n")
+	mustNotContain(t, r.stdout, "func C()", "func D()")
+	if r.res.Base != "v1.0.0" || r.res.Head != "v1.1.0" {
+		t.Errorf("labels = %q, %q", r.res.Base, r.res.Head)
+	}
+
+	// @latest as the head is the newest release tag reachable from HEAD;
+	// as the base it still skips the tag on the head commit, so the two
+	// together are the same pair.
+	r = f.mustRun(LatestRelease, LatestRelease, Options{})
+	mustContain(t, r.stdout, "  + func B()\n", "would require: MINOR (v1.0.0 → v1.1.0)\n")
+	r = f.mustRun("v1.0.0", LatestRelease, Options{})
+	mustContain(t, r.stdout, "  + func B()\n")
+	mustNotContain(t, r.stdout, "func C()")
+
+	// With a head of its own, @previous is the release before the newest
+	// one that head can reach.
+	r = f.mustRun(PreviousRelease, "HEAD", Options{})
+	mustContain(t, r.stdout, "  + func B()\n", "  + func C()\n")
+	mustNotContain(t, r.stdout, "func D()")
+
+	// A tag on the head commit counts as the newest release, so @previous
+	// moves up with it and the pair describes the new release.
+	f.tag("v1.2.0", three)
+	r = f.mustRun(PreviousRelease, LatestRelease, Options{})
+	mustContain(t, r.stdout, "  + func C()\n", "would require: MINOR (v1.1.0 → v1.2.0)\n")
+	mustNotContain(t, r.stdout, "func B()", "func D()")
+	if r.res.Base != "v1.1.0" || r.res.Head != "v1.2.0" {
+		t.Errorf("labels = %q, %q", r.res.Base, r.res.Head)
+	}
+}
+
+func TestPreviousReleaseErrors(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	one := f.commit("one")
+
+	// No release tags at all: the error names @previous, not the @latest
+	// it resolves the head with.
+	r := f.run(PreviousRelease, LatestRelease, Options{})
+	if r.code != ExitError || r.err == nil {
+		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
+	}
+	mustContain(t, r.err.Error(), `@previous: no release tags for example.com/m (looking for tags like "v1.2.3")`)
+
+	// One release tag is a newest release with nothing before it.
+	f.tag("v1.0.0", one)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n")
+	f.commit("two")
+	r = f.run(PreviousRelease, LatestRelease, Options{})
+	if r.code != ExitError || r.err == nil {
+		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
+	}
+	mustContain(t, r.err.Error(), "@previous: v1.0.0 is the only release tag reachable from v1.0.0, and @previous is the one before the newest; name a base instead: @v1.0.0")
 }
 
 func TestLatestReleasePrerelease(t *testing.T) {

@@ -42,10 +42,12 @@ type fetch struct {
 	err  error
 }
 
-// Resolve implements Source with go list -m. A canonical version resolves
-// to itself without running anything.
+// Resolve implements Source with go list -m. A canonical version of the
+// path's own major version resolves to itself without running anything;
+// one of another major cannot belong to the path as written, so the go
+// command is asked, and its error names the path the module declares.
 func (g *GoCommand) Resolve(ctx context.Context, path, query string) (module.Version, error) {
-	if module.CanonicalVersion(query) == query {
+	if module.CanonicalVersion(query) == query && module.Check(path, query) == nil {
 		return module.Version{Path: path, Version: query}, nil
 	}
 	what := "go list -m " + path + "@" + query

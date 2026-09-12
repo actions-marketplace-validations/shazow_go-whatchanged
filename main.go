@@ -36,8 +36,22 @@ For the head, no location means the base's repository or module: "@v1.4.0
 module's last release with its main branch, and with no head at all a
 module base is compared with @HEAD, its default branch.
 
+@previous is the release before the newest one, and pairs with @latest as
+the head, so "@previous" alone is what the last release shipped and
+"github.com/x/m@previous" is what its last release shipped.
+
 When the base is a release tag, the summary also names the version the
 changes call for: "would require: MINOR (v1.4.0 → v1.5.0)".
+
+A module side whose location is not the module path its go.mod declares is
+retried once under that path, and the retry is noted on the standard
+error: a vanity URL, github.com/charmbracelet/lipgloss@v2.0.0 diffed as
+charm.land/lipgloss/v2@v2.0.0, and a major version suffix the location
+lacks, github.com/x/m@v2.0.0 as github.com/x/m/v2@v2.0.0. A head that
+named no module of its own follows the base, so both sides stay on one
+module line. --resolve-module=never refuses the mismatch instead, as the
+go command does. Only the sides are redirected: a dependency is always
+fetched under the path its importers spell.
 
 --pkg and --exclude take import paths or module-relative paths, with "..."
 matching anything: "store/..." is the store package and everything below
@@ -99,13 +113,14 @@ type options struct {
 	Format     string   `long:"format" choice:"text" choice:"markdown" choice:"md" choice:"json" default:"text" description:"output type"`
 	Color      string   `long:"color" choice:"auto" choice:"always" choice:"never" default:"auto" description:"colorize output (auto honors NO_COLOR)"`
 	Strict     bool     `long:"strict" description:"treat type-check errors as fatal"`
+	ResolveMod string   `long:"resolve-module" choice:"auto" choice:"never" default:"auto" description:"follow the module path a module side's go.mod declares when the location given is not that path: a vanity URL (github.com/charmbracelet/lipgloss@v2.0.0 is the module charm.land/lipgloss/v2), or a major version suffix the location lacks; never refuses the mismatch, as the go command does"`
 	FSReadOnly bool     `long:"fsreadonly" description:"never write to the filesystem or run the go command: a module missing from the module cache is an error instead of a download"`
 	ExitFail   string   `long:"exit-fail" choice:"major" choice:"minor" choice:"patch" description:"exit 100/101/102 when the required bump is major, minor or patch, or higher"`
 	Version    bool     `long:"version" description:"print the version of go-whatchanged and exit"`
 
 	Args struct {
-		Base string `positional-arg-name:"base" description:"the old side, as location@version: @v1.4.0, @HEAD~2 or @origin/main in the current repository, @latest for its newest release tag; github.com/x/m@v1.2.0 or github.com/x/m@latest for a published module; ~/src/m@v1.2.0 for another checkout (default: @HEAD)"`
-		Head string `positional-arg-name:"head" description:"the new side, in the same forms; @main alone means main in the base's repository or module (default: the working tree, including uncommitted and untracked files, or @HEAD for a module)"`
+		Base string `positional-arg-name:"base" description:"the old side, as location@version: @v1.4.0, @HEAD~2 or @origin/main in the current repository, @latest for its newest release tag, @previous for the release before it; github.com/x/m@v1.2.0 or github.com/x/m@latest for a published module; ~/src/m@v1.2.0 for another checkout (default: @HEAD)"`
+		Head string `positional-arg-name:"head" description:"the new side, in the same forms; @main alone means main in the base's repository or module (default: the working tree, including uncommitted and untracked files, @HEAD for a module, or @latest for a @previous base)"`
 	} `positional-args:"yes"`
 }
 
@@ -188,6 +203,8 @@ func (o *options) whatchanged() (whatchanged.Options, error) {
 		Strict:    o.Strict,
 		Base:      o.Args.Base,
 		Head:      o.Args.Head,
+
+		ExactModulePath: o.ResolveMod == "never",
 	}
 	if !o.FSReadOnly {
 		opts.Fetch = &modfetch.GoCommand{Stderr: os.Stderr}

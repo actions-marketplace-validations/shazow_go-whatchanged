@@ -10,7 +10,7 @@ What changed in the public API?
 two versions.
 
 - **Read-only:** Happy path is optimized to avoid writing to the filesystem (no temporary directories, git clones, or worktrees). Only `go` commands are used for comparing remote packages that are not already cached, use `--fsreadonly` to disable any features that rely on writing the filesystem.
-- **Release-aware:** All standard Go version tags supported (`@latest` for latest tagged release; `@v1.2.3` for a specific tag; `@HEAD` for a ref like HEAD, etc).
+- **Release-aware:** All standard Go version tags supported (`@latest` for latest tagged release; `@previous` for the release before it, which pairs the last two releases; `@v1.2.3` for a specific tag; `@HEAD` for a ref like HEAD, etc).
 - **CI-ready.** Markdown for pull requests, JSON for tools, exit codes for
   gates, and a [GitHub Action](#github-action) that posts the diff to the
   job summary and as a pull request comment.
@@ -49,6 +49,7 @@ go install github.com/shazow/go-whatchanged@latest
 | What do my uncommitted changes do to the API? | `go-whatchanged` |
 | What has changed since the last release? | `go-whatchanged @latest` |
 | What did release `v1.4.0` ship? | `go-whatchanged @latest @v1.4.0` |
+| What did the last release ship? | `go-whatchanged @previous` |
 | What does this branch change, compared to `main`? | `go-whatchanged @origin/main` |
 | What is unreleased on `main` of a module I don't have checked out? | `go-whatchanged github.com/stretchr/testify@latest` |
 | What did a published release change? | `go-whatchanged github.com/stretchr/testify@v1.9.0 @v1.10.0` |
@@ -65,12 +66,13 @@ go-whatchanged [options] [<base> [<head>]]
 
   base   the old side, as location@version: @v1.4.0, @HEAD~2 or
          @origin/main in the current repository, @latest for its newest
-         release tag among the ancestors of head; github.com/x/m@v1.2.0 or
+         release tag among the ancestors of head, @previous for the
+         release before that one; github.com/x/m@v1.2.0 or
          github.com/x/m@latest for a published module; ~/src/m@v1.2.0 for
          another checkout. Default: @HEAD.
   head   the new side, in the same forms. @main alone means main in the
-         base's repository or module. Default: the working tree, or @HEAD
-         for a module.
+         base's repository or module. Default: the working tree, @HEAD
+         for a module, or @latest for a @previous base.
 
 Options:
   --pkg=PATTERN      diff only packages matching PATTERN (repeatable)
@@ -84,6 +86,13 @@ Options:
   --format=LAYOUT    text | markdown (or md) | json (default text)
   --color=WHEN       auto | always | never (default auto; honors NO_COLOR)
   --strict           type-check errors are fatal (default: warn)
+  --resolve-module=WHEN
+                     auto | never: when a module side's location is not the
+                     module path its go.mod declares, follow the declared
+                     path or refuse as the go command does; covers a vanity
+                     URL (github.com/charmbracelet/lipgloss@v2.0.0 is the
+                     module charm.land/lipgloss/v2) and a major version
+                     suffix the location lacks (default auto)
   --fsreadonly       never write to the filesystem or run the go command
   --exit-fail=LEVEL  exit 100/101/102 when the required bump is major, minor
                      or patch, or higher
@@ -128,8 +137,9 @@ The location is a module path, a directory, or nothing:
 | Location | `@version` means | Alone |
 |---|---|---|
 | none: `@v1.4.0`, `@HEAD~2`, `@origin/main` | a revision of the current repository, or for the head, of the base's repository or module | the default: `@HEAD` as base, the working tree as head |
-| `@latest` | the newest release tag among the ancestors of the head | |
-| a module path: `github.com/x/m@v1.2.0` | a published module version, fetched into the module cache; `@latest` its newest release, `@main` a branch, `@HEAD` the default branch, `@abc1234` a commit | an error: a module needs a version |
+| `@latest` | the newest release tag among the ancestors of the head; as the head, the newest reachable from `HEAD` | |
+| `@previous` | the release before the newest one; a base only, and its head defaults to `@latest` | |
+| a module path: `github.com/x/m@v1.2.0` | a published module version, fetched into the module cache; `@latest` its newest release, `@previous` the one before it, `@main` a branch, `@HEAD` the default branch, `@abc1234` a commit | an error: a module needs a version |
 | a directory: `~/src/m@v1.2.0`, `./m@latest`, `../m@main` | a revision of that checkout | that checkout's `HEAD` as base, its working tree as head |
 
 A directory is anything spelled as a path, starting with `./`, `../`, `~/`
