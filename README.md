@@ -199,23 +199,6 @@ them in a section of theirs; neither counts towards the public API's
 totals or the exit code. `--filter` picks the sections and the kinds of
 change; see [Filters](#filters).
 
-## Reading the output
-
-Each change shows the declaration of its symbol, formatted as gofmt
-formats it; the fields of a struct are shown together, as a fragment of
-the struct with the changed fields alone inside and `// ...` for the
-rest. Bold marks an
-incompatible change: a removal, a changed signature, a method added to an
-interface. A line with no declaration to show carries apidiff's message
-behind a glyph:
-
-| Glyph | Meaning |
-|---|---|
-| `-` | removed |
-| `+` | compatible addition |
-| `!` | incompatible addition |
-| `~` | changed (bold when incompatible) |
-
 ### Import changes
 
 Above each package's changes, the diff lists the packages of other modules
