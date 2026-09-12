@@ -199,39 +199,6 @@ them in a section of theirs; neither counts towards the public API's
 totals or the exit code. `--filter` picks the sections and the kinds of
 change; see [Filters](#filters).
 
-### Import changes
-
-Above each package's changes, the diff lists the packages from outside the
-module it started or stopped importing, as `import "path"` lines on `+`
-and `-` rows: a new dependency is as visible as a new function. The
-standard library is tracked along with other modules' packages, so a
-package that swaps `sort` for `slices` is listed for both; a nested module
-counts as another module. Only the module's own packages are left out,
-since each of them is already in the diff in its own right. A package that
-appears brings all of its imports, one that disappears loses them. Import
-changes are not API changes: they never count towards the summary, the
-required release or the exit code, and a package whose imports alone
-changed is listed without counting as changed. They are compatible, so
-`--filter=breaking` hides them.
-
-With `--filter=imports`, here is what an upgrade of testify did, where
-`assert` moved its YAML dependency behind a package of its own:
-
-```
-$ go-whatchanged --filter=imports github.com/stretchr/testify@v1.9.0 @v1.10.0
-github.com/stretchr/testify/assert
-  - import "gopkg.in/yaml.v3"
-
-github.com/stretchr/testify/assert/yaml (new)
-  + import "gopkg.in/yaml.v3"
-
-5 packages changed · 1 incompatible · 23 compatible · would require: MAJOR (v1.9.0 → v2.0.0)
-```
-
-The imports are those of the package's non-test files for the build
-target, as the `go` command sees them; `import "C"` is never among them,
-since cgo is disabled.
-
 ### Filters
 
 `--filter` takes terms, comma-separated or repeated, along two
@@ -242,26 +209,16 @@ exit code always describe the public API changes of the full diff.
 
 | Term | Selects |
 |---|---|
+| `default` | `api`, `imports` and `mod` |
+| `all` | every package and every kind, `tests` included |
+| `breaking` | only incompatible changes, on top of any of the above |
 | `public` | packages importable from outside the module |
 | `internal` | packages below an `internal` directory |
 | `main` | `main` packages, wherever they live |
 | `api` | changes to the exported API, as apidiff reports them |
-| `imports` | packages outside the module, the standard library included, a package started or stopped importing |
+| `imports` | added and removed imports |
 | `mod` | go.mod directives that appeared, disappeared or changed |
 | `tests` | test functions that appeared or disappeared |
-| `default` | every package, `api`, `imports` and `mod`: the default |
-| `all` | every package and every kind, `tests` included |
-| `breaking` | only incompatible changes, on top of any of the above |
-
-A test function is a `Test`, `Benchmark`, `Fuzz` or `Example` function of
-the package's test files for the build target, its own and its external
-`_test` package's alike, named as the `go` command names them (`TestOpen`
-and `Test_open` are tests, `Testify` is not, and `TestMain` is the test
-binary's entry point). Tests are read from their declarations alone, so
-subtests are not seen; a directory of test files alone is a package for
-their sake. The go.mod directives are `go`, `toolchain`, the direct
-`require`s and the `replace`s; indirect requirements are not tracked. Import, go.mod and test changes are never
-API changes: they do not count, and `breaking` hides them.
 
 ```
 go-whatchanged --filter=public @latest            # the importable API alone
@@ -272,17 +229,6 @@ go-whatchanged --filter=api,tests @latest         # the API and the tests it cam
 go-whatchanged --filter=all @latest               # everything
 go-whatchanged --filter=public,breaking @latest   # what breaks importers
 ```
-
-The output is ordered the same way whatever the filter. The go.mod
-changes open it as a block of their own, removals first, then edits as
-`-`/`+` pairs, then additions, each in the file's order of directives.
-Sections follow in the order public, internal, main, each its packages
-sorted by import path and closed by a summary line. Within a package, the
-import changes come first, then the API changes in apidiff's order, then
-the test changes; imports and tests each list removals before additions,
-sorted by path or name. `--format=markdown` regroups a block's lines under
-`// Removed`, `// Changed` and `// Added`, keeping that order within each
-group.
 
 ```
 $ go-whatchanged --filter=all @latest
